@@ -31,10 +31,12 @@ You give a short voice sample and some text. The system speaks the text in that 
    ```bash
    shiny run app.py
    ```
-2. Open [http://127.0.0.1:8000](http://127.0.0.1:8000) in your browser.
+2. Open [http://127.0.0.1:8000](http://127.0.0.1:8000) in your browser. The page loads immediately; the F5-TTS model loads on your first generation, not on startup.
 3. Upload a voice sample. The system uses the first 12 seconds and transcribes them automatically.
-4. Type the text and click the generate button.
+4. Type the text, pick a quality preset (Fast, Balanced, or Best), and click the generate button. The button disables while the audio generates; a Cancel button appears next to it.
 5. Download the result as WAV or MP3.
+
+Open "Advanced settings" for more control: an exact diffusion-step count (the quality preset sets this for you), the voice adherence strength (`cfg_strength`), and a reference transcript override for the first 12 seconds of your upload.
 
 ## CLI
 
@@ -166,7 +168,7 @@ Follow these rules for the text:
 
 The web app examines each uploaded sample. It shows a warning when the sample has a problem.
 
-If the voice still sounds flat, decrease `cfg_strength` to a value between 1.5 and 2.0. Generate more than one time. Each run uses a different random seed, and some runs sound more natural than others.
+If the voice still sounds flat, decrease `cfg_strength` to a value between 1.5 and 2.0 (in the web app, under "Advanced settings"; on the CLI, with `--cfg-strength`; in the API, with the `cfg_strength` field). Generate more than one time. Each run uses a different random seed, and some runs sound more natural than others.
 
 ## Quality
 
@@ -177,12 +179,22 @@ The system selects the highest quality that your hardware can run:
 
 More steps give clearer audio and a longer generation time. The default gives the best quality. If you want faster drafts, set `steps` to a lower value, for example 16.
 
-NOTE: The model loads on the first synthesis request. The first request is slow because of this load. Later requests use the loaded model and are faster.
+The web app exposes this choice as three quality presets: Fast (16 steps), Balanced (32 steps), and Best (the hardware maximum above). "Advanced settings" holds the exact diffusion-step count if you want a value in between.
+
+NOTE: The model loads on the first synthesis request, in the web app, the CLI, and the API alike. The first request is slow because of this load. Later requests use the loaded model and are faster. Within one running web app or one running API server, every session and every request shares that same loaded model; the web app and the API are separate processes, so each loads its own copy if you run both.
 
 ## Tests
 
-Run the test suite:
+The test suite has two tiers. Fast tests mock the F5-TTS model and never download or run it. Integration tests use the real model and are slow.
+
+Run the fast tests (this is the default):
 
 ```bash
-python -m pytest tests/
+python -m pytest
+```
+
+Run the integration tests:
+
+```bash
+python -m pytest -m integration
 ```
