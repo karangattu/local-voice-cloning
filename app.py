@@ -24,21 +24,18 @@ app_ui = ui.page_fluid(
         {"class": "main-container"},
         ui.div(
             {"class": "text-center mb-4"},
-            ui.h2("🎙️ True Zero-Shot Voice Cloning Studio", class_="text-primary fw-bold"),
-            ui.p("Directly learns and replicates the exact timbre and acoustics from your uploaded audio file using F5-TTS.", class_="text-muted"),
-            ui.span("⚡ Neural Diffusion-Transformer Engine Active (24kHz HD)", class_="badge-custom"),
+            ui.h2("Voice Cloning Studio", class_="text-primary fw-bold"),
+            ui.span(
+                f"⚡ Neural Diffusion-Transformer Engine Active (24kHz HD, {cloner.device.upper()} accelerated, {cloner.default_nfe_step}-step max quality)",
+                class_="badge-custom",
+            ),
         ),
         ui.div(
             {"class": "card-box"},
             ui.h4("1. Reference Voice Sample (Your Target Voice)"),
-            ui.p("Upload the audio clip of the person's voice you want to clone (up to 30s).", class_="text-muted small"),
+            ui.p("Upload the audio clip of the person's voice you want to clone. The first 12 seconds are used; the transcript is auto-detected via Whisper.", class_="text-muted small"),
             ui.input_file("audio_file", "Upload Voice Sample (.wav, .mp3, .ogg, .flac, .m4a)", accept=[".wav", ".mp3", ".ogg", ".flac", ".m4a"], multiple=False),
             ui.output_ui("reference_preview"),
-            ui.input_text(
-                "ref_text",
-                "Reference Audio Transcript (Optional - auto-detected via Whisper if empty):",
-                placeholder="What was spoken in the uploaded audio clip...",
-            ),
         ),
         ui.div(
             {"class": "card-box"},
@@ -53,7 +50,7 @@ app_ui = ui.page_fluid(
             ),
             ui.layout_columns(
                 ui.input_slider("speed", "Speaking Speed", min=0.6, max=1.6, value=1.0, step=0.05),
-                ui.input_slider("nfe_step", "Quality / Diffusion Steps (Higher = clearer)", min=16, max=48, value=24, step=4),
+                ui.input_slider("nfe_step", "Quality / Diffusion Steps (Higher = clearer)", min=16, max=96, value=cloner.default_nfe_step, step=4),
             ),
             ui.input_action_button("btn_generate", "🚀 Clone Uploaded Voice & Generate Audio", class_="btn-primary w-100 btn-lg mt-3 fw-bold"),
         ),
@@ -103,10 +100,9 @@ def server(input, output, session):
             return
 
         ref_path = file_infos[0]["datapath"]
-        ref_text = input.ref_text() or ""
         try:
             with ui.Progress(min=1, max=3) as p:
-                p.set(1, message="Extracting reference acoustic features...")
+                p.set(1, message="Transcribing and analyzing your reference voice...")
                 speed = float(input.speed())
                 nfe_step = int(input.nfe_step())
 
@@ -114,17 +110,18 @@ def server(input, output, session):
                 result = cloner.clone_voice(
                     reference_audio_path=ref_path,
                     text=text,
-                    reference_text=ref_text,
                     speed=speed,
                     nfe_step=nfe_step,
                 )
 
-                p.set(3, message="Saving generated 24kHz master...")
+                p.set(3, message="Saving 24-bit WAV master and MP3 versions...")
                 temp_dir = Path(tempfile.gettempdir())
-                out_file = temp_dir / "cloned_uploaded_voice.wav"
-                save_audio(out_file, result.audio, sample_rate=result.sample_rate)
+                wav_file = temp_dir / "cloned_uploaded_voice.wav"
+                mp3_file = temp_dir / "cloned_uploaded_voice.mp3"
+                save_audio(wav_file, result.audio, sample_rate=result.sample_rate)
+                save_audio(mp3_file, result.audio, sample_rate=result.sample_rate)
 
-                output_audio_path.set(str(out_file))
+                output_audio_path.set(str(wav_file))
                 ui.notification_show("Voice cloned successfully with your uploaded audio!", type="message")
 
         except (ValueError, OSError, RuntimeError) as e:
@@ -145,23 +142,40 @@ def server(input, output, session):
         if not path or not Path(path).exists():
             return ui.div()
 
-        with open(path, "rb") as f:
-            audio_bytes = f.read()
-        b64_audio = base64.b64encode(audio_bytes).decode("utf-8")
+        wav_path = Path(path)
+        mp3_path = wav_path.with_suffix(".mp3")
+
+        with open(wav_path, "rb") as f:
+            b64_wav = base64.b64encode(f.read()).decode("utf-8")
+
+        download_buttons = [
+            ui.tags.a(
+                "⬇️ Download WAV (24-bit lossless)",
+                href=f"data:audio/wav;base64,{b64_wav}",
+                download="cloned_voice_output.wav",
+                class_="btn btn-success fw-semibold me-2",
+            ),
+        ]
+        if mp3_path.exists():
+            with open(mp3_path, "rb") as f:
+                b64_mp3 = base64.b64encode(f.read()).decode("utf-8")
+            download_buttons.append(
+                ui.tags.a(
+                    "⬇️ Download MP3 (compressed)",
+                    href=f"data:audio/mpeg;base64,{b64_mp3}",
+                    download="cloned_voice_output.mp3",
+                    class_="btn btn-outline-success fw-semibold",
+                )
+            )
 
         return ui.div(
             ui.tags.audio(
                 controls=True,
                 autoplay=True,
-                src=f"data:audio/wav;base64,{b64_audio}",
+                src=f"data:audio/wav;base64,{b64_wav}",
                 style="width: 100%; margin-bottom: 14px;",
             ),
-            ui.tags.a(
-                "⬇️ Download Cloned Audio (.wav)",
-                href=f"data:audio/wav;base64,{b64_audio}",
-                download="cloned_voice_output.wav",
-                class_="btn btn-success fw-semibold",
-            ),
+            ui.div(*download_buttons),
         )
 
 
