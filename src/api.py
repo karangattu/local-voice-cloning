@@ -19,21 +19,15 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 
 from src.audio_utils import SUPPORTED_OUTPUT_FORMATS, save_audio
+from src.cloner import (
+    detect_device,
+    get_shared_cloner,
+    is_shared_cloner_loaded,
+    recommended_nfe_step,
+)
 
 MEDIA_TYPES = {"wav": "audio/wav", "mp3": "audio/mpeg"}
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
-
-_cloner = None
-
-
-def get_cloner():
-    global _cloner
-    if _cloner is None:
-        from src.cloner import LocalVoiceCloner
-
-        _cloner = LocalVoiceCloner()
-    return _cloner
-
 
 app = FastAPI(
     title="Local Voice Cloning API",
@@ -47,19 +41,28 @@ app = FastAPI(
 def health():
     return {
         "status": "ok",
-        "model_loaded": _cloner is not None,
-        "device": _cloner.device if _cloner is not None else None,
+        "model_loaded": is_shared_cloner_loaded(),
     }
 
 
 @app.get("/info")
 def info():
-    cloner = get_cloner()
+    """Report engine defaults without forcing a model load. Once the model
+    has loaded (after a first /synthesize call), report its actual device
+    in case it fell back from the projected device (see LocalVoiceCloner)."""
+    if is_shared_cloner_loaded():
+        cloner = get_shared_cloner()
+        device, default_steps = cloner.device, cloner.default_nfe_step
+    else:
+        device = detect_device()
+        default_steps = recommended_nfe_step(device)
+
     return {
         "engine": "F5-TTS",
-        "device": cloner.device,
-        "sample_rate": cloner.sample_rate,
-        "default_quality_steps": cloner.default_nfe_step,
+        "device": device,
+        "sample_rate": 24000,
+        "default_quality_steps": default_steps,
+        "model_loaded": is_shared_cloner_loaded(),
         "supported_output_formats": sorted(SUPPORTED_OUTPUT_FORMATS),
     }
 
@@ -106,7 +109,7 @@ async def synthesize(
         ref_path.write_bytes(ref_bytes)
 
         try:
-            result = get_cloner().clone_voice(
+            result = get_shared_cloner().clone_voice(
                 reference_audio_path=ref_path,
                 text=text,
                 reference_text=ref_text,
