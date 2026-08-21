@@ -29,7 +29,7 @@ app_ui = ui.page_fluid(
                 width: 64px; height: 64px; border-radius: 18px;
                 background: rgba(255, 255, 255, 0.15); margin-bottom: 14px;
             }
-            .hero .icon-badge svg { width: 30px; height: 30px; fill: white; }
+            .hero .icon-badge svg { width: 30px !important; height: 30px !important; margin: 0 !important; fill: white; }
             .engine-badge {
                 display: inline-flex; align-items: center; gap: 8px;
                 background: rgba(255, 255, 255, 0.18); color: white;
