@@ -26,14 +26,23 @@ def parse_args(args=None):
         "--ref-text",
         type=str,
         default="",
-        help="Transcript of the reference audio clip (optional, auto-transcribes if empty).",
+        help="Transcript of the first 12 seconds of the reference audio only "
+        "(optional, auto-transcribes if empty; a longer transcript truncates the output).",
     )
     parser.add_argument(
         "-o",
         "--output",
         type=str,
         default="output.wav",
-        help="Path to save the generated audio file.",
+        help="Path to save the generated audio file (.wav or .mp3).",
+    )
+    parser.add_argument(
+        "-f",
+        "--format",
+        type=str,
+        choices=["wav", "mp3"],
+        default=None,
+        help="Output audio format (default: inferred from the output file extension).",
     )
     parser.add_argument(
         "-s",
@@ -45,8 +54,8 @@ def parse_args(args=None):
     parser.add_argument(
         "--steps",
         type=int,
-        default=24,
-        help="Diffusion quality steps (default: 24).",
+        default=None,
+        help="Diffusion quality steps (default: hardware maximum — 64 on GPU/Apple Silicon, 32 on CPU).",
     )
     return parser.parse_args(args)
 
@@ -69,7 +78,16 @@ def main():
         nfe_step=args.steps,
     )
 
-    out_path = save_audio(args.output, result.audio, sample_rate=result.sample_rate)
+    try:
+        out_path = save_audio(
+            args.output,
+            result.audio,
+            sample_rate=result.sample_rate,
+            output_format=args.format,
+        )
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
     print(f"Generated {result.duration_seconds:.2f}s high-definition audio saved to: {out_path}")
 
 

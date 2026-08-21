@@ -11,7 +11,14 @@ def test_parse_args_defaults():
     assert args.text == "Test speech"
     assert args.output == "output.wav"
     assert args.speed == 1.0
-    assert args.steps == 24
+    assert args.steps is None
+    assert args.format is None
+
+
+def test_parse_args_mp3_format():
+    args = parse_args(["-r", "sample.wav", "-t", "Test", "-o", "out.mp3", "-f", "mp3"])
+    assert args.output == "out.mp3"
+    assert args.format == "mp3"
 
 
 def test_main_file_not_found():

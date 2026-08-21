@@ -25,7 +25,7 @@ torchaudio.load = _safe_torchaudio_load
 
 from f5_tts.api import F5TTS
 
-from src.audio_utils import load_audio, normalize_audio
+from src.audio_utils import enhance_audio, load_audio
 
 
 @dataclass
@@ -34,6 +34,12 @@ class SynthesisResult:
     sample_rate: int
     duration_seconds: float
     matched_voice: str
+
+
+def recommended_nfe_step(device: str) -> int:
+    """Highest diffusion step count the hardware can run at acceptable speed:
+    GPU-accelerated devices get the full 64 steps, CPU falls back to 32."""
+    return 64 if device in ("cuda", "mps") else 32
 
 
 class LocalVoiceCloner:
@@ -56,17 +62,23 @@ class LocalVoiceCloner:
             self.device = "cpu"
             self.f5 = F5TTS(device="cpu")
 
+        self.default_nfe_step = recommended_nfe_step(self.device)
+
     def clone_voice(
         self,
         reference_audio_path: str | Path,
         text: str,
         reference_text: str = "",
         speed: float = 1.0,
-        nfe_step: int = 24,
+        nfe_step: int | None = None,
         cfg_strength: float = 2.0,
+        sway_sampling_coef: float = -1.0,
     ) -> SynthesisResult:
         if not text.strip():
             raise ValueError("Input text cannot be empty.")
+
+        if nfe_step is None:
+            nfe_step = self.default_nfe_step
 
         tensor_audio, _ = load_audio(
             reference_audio_path,
@@ -85,16 +97,17 @@ class LocalVoiceCloner:
             gen_text=text.strip(),
             nfe_step=nfe_step,
             cfg_strength=cfg_strength,
+            sway_sampling_coef=sway_sampling_coef,
             speed=speed,
             remove_silence=False,
             seed=safe_seed,
         )
 
-        normalized = normalize_audio(wav, target_level_db=-16.0)
+        enhanced = enhance_audio(np.asarray(wav), sr_out, target_level_db=-16.0)
 
         return SynthesisResult(
-            audio=normalized,
+            audio=enhanced,
             sample_rate=sr_out,
-            duration_seconds=float(len(normalized) / sr_out),
+            duration_seconds=float(len(enhanced) / sr_out),
             matched_voice="F5-TTS Direct Acoustic Conditioning",
         )

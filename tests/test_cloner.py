@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from src.cloner import LocalVoiceCloner, SynthesisResult
+from src.cloner import LocalVoiceCloner, SynthesisResult, recommended_nfe_step
 
 
 @pytest.fixture
@@ -26,6 +26,13 @@ def test_cloner_initialization():
     cloner = LocalVoiceCloner()
     assert cloner.f5 is not None
     assert cloner.sample_rate == 24000
+    assert cloner.default_nfe_step == recommended_nfe_step(cloner.device)
+
+
+def test_recommended_nfe_step():
+    assert recommended_nfe_step("mps") == 64
+    assert recommended_nfe_step("cuda") == 64
+    assert recommended_nfe_step("cpu") == 32
 
 
 def test_clone_voice_synthesis(sample_voice_file):
