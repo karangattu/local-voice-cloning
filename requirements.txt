@@ -1,4 +1,6 @@
 shiny>=1.0.0
+shinyswatch>=0.7.0
+faicons>=0.2.2
 fastapi>=0.110.0
 uvicorn>=0.29.0
 python-multipart>=0.0.9

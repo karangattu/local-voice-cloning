@@ -2,6 +2,8 @@ import base64
 import tempfile
 from pathlib import Path
 
+import shinyswatch
+from faicons import icon_svg
 from shiny import App, reactive, render, ui
 
 from src.audio_utils import analyze_reference_audio, save_audio
@@ -13,33 +15,89 @@ app_ui = ui.page_fluid(
     ui.tags.head(
         ui.tags.style(
             """
-            body { background-color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-            .main-container { max-width: 940px; margin: 30px auto; }
-            .card-box { background: white; padding: 24px; border-radius: 14px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.08); margin-bottom: 20px; }
-            .badge-custom { background: #e0e7ff; color: #3730a3; padding: 5px 12px; border-radius: 6px; font-weight: 600; font-size: 0.85rem; }
+            body { background: linear-gradient(160deg, #f4f1fb 0%, #eef4fd 100%); min-height: 100vh; }
+            .main-container { max-width: 960px; margin: 0 auto 48px; }
+            .hero {
+                background: linear-gradient(135deg, #593196 0%, #7b4fc9 55%, #3d7dd8 100%);
+                color: white; border-radius: 0 0 28px 28px;
+                padding: 44px 32px 36px; margin-bottom: 32px;
+                box-shadow: 0 12px 32px -12px rgba(89, 49, 150, 0.55);
+            }
+            .hero h1 { font-weight: 800; letter-spacing: -0.5px; }
+            .hero .icon-badge {
+                display: inline-flex; align-items: center; justify-content: center;
+                width: 64px; height: 64px; border-radius: 18px;
+                background: rgba(255, 255, 255, 0.15); margin-bottom: 14px;
+            }
+            .hero .icon-badge svg { width: 30px; height: 30px; fill: white; }
+            .engine-badge {
+                display: inline-flex; align-items: center; gap: 8px;
+                background: rgba(255, 255, 255, 0.18); color: white;
+                padding: 7px 16px; border-radius: 999px;
+                font-weight: 600; font-size: 0.85rem; backdrop-filter: blur(4px);
+            }
+            .engine-badge svg { width: 14px; height: 14px; fill: #ffd95e; }
+            .card-box {
+                background: white; padding: 28px; border-radius: 18px;
+                border: 1px solid rgba(89, 49, 150, 0.08);
+                box-shadow: 0 8px 24px -14px rgba(30, 24, 60, 0.25);
+                margin-bottom: 24px; transition: box-shadow 0.2s ease;
+            }
+            .card-box:hover { box-shadow: 0 12px 32px -14px rgba(89, 49, 150, 0.35); }
+            .step-header { display: flex; align-items: center; gap: 14px; margin-bottom: 6px; }
+            .step-number {
+                display: inline-flex; align-items: center; justify-content: center;
+                min-width: 40px; height: 40px; border-radius: 12px;
+                background: linear-gradient(135deg, #593196, #7b4fc9);
+                color: white; font-weight: 700; font-size: 1.1rem;
+            }
+            .step-header svg { width: 18px; height: 18px; fill: #593196; }
+            .btn-generate {
+                background: linear-gradient(135deg, #593196, #3d7dd8) !important;
+                border: none !important; padding: 14px !important;
+                border-radius: 12px !important; letter-spacing: 0.2px;
+                box-shadow: 0 8px 20px -8px rgba(89, 49, 150, 0.6);
+                transition: transform 0.15s ease, box-shadow 0.15s ease;
+            }
+            .btn-generate:hover { transform: translateY(-1px); box-shadow: 0 12px 24px -8px rgba(89, 49, 150, 0.7); }
+            .btn-generate svg { width: 16px; height: 16px; fill: white; margin-right: 8px; }
+            .btn-download svg { width: 14px; height: 14px; margin-right: 8px; }
+            .icon-inline svg { width: 15px; height: 15px; margin-right: 6px; vertical-align: -2px; }
+            audio { border-radius: 10px; }
             """
         )
     ),
     ui.div(
+        {"class": "hero text-center"},
+        ui.div({"class": "icon-badge"}, icon_svg("microphone-lines")),
+        ui.h1("Voice Cloning Studio"),
+        ui.p("Clone any voice locally. Your audio never leaves this machine.", class_="mb-3 opacity-75"),
+        ui.span(
+            {"class": "engine-badge"},
+            icon_svg("bolt"),
+            f"F5-TTS Engine | 24kHz HD | {cloner.device.upper()} accelerated | {cloner.default_nfe_step}-step max quality",
+        ),
+    ),
+    ui.div(
         {"class": "main-container"},
         ui.div(
-            {"class": "text-center mb-4"},
-            ui.h2("Voice Cloning Studio", class_="text-primary fw-bold"),
-            ui.span(
-                f"⚡ Neural Diffusion-Transformer Engine Active (24kHz HD, {cloner.device.upper()} accelerated, {cloner.default_nfe_step}-step max quality)",
-                class_="badge-custom",
-            ),
-        ),
-        ui.div(
             {"class": "card-box"},
-            ui.h4("1. Reference Voice Sample (Your Target Voice)"),
+            ui.div(
+                {"class": "step-header"},
+                ui.span({"class": "step-number"}, "1"),
+                ui.h4({"class": "mb-0"}, "Reference Voice Sample"),
+            ),
             ui.p("Upload the audio clip of the person's voice you want to clone. The first 12 seconds are used; the transcript is auto-detected via Whisper.", class_="text-muted small"),
             ui.input_file("audio_file", "Upload Voice Sample (.wav, .mp3, .ogg, .flac, .m4a)", accept=[".wav", ".mp3", ".ogg", ".flac", ".m4a"], multiple=False),
             ui.output_ui("reference_preview"),
         ),
         ui.div(
             {"class": "card-box"},
-            ui.h4("2. Speech Text to Generate"),
+            ui.div(
+                {"class": "step-header"},
+                ui.span({"class": "step-number"}, "2"),
+                ui.h4({"class": "mb-0"}, "Speech Text to Generate"),
+            ),
             ui.input_text_area(
                 "speech_text",
                 "Text for the cloned voice to speak:",
@@ -52,15 +110,24 @@ app_ui = ui.page_fluid(
                 ui.input_slider("speed", "Speaking Speed", min=0.6, max=1.6, value=1.0, step=0.05),
                 ui.input_slider("nfe_step", "Quality / Diffusion Steps (Higher = clearer)", min=16, max=96, value=cloner.default_nfe_step, step=4),
             ),
-            ui.input_action_button("btn_generate", "🚀 Clone Uploaded Voice & Generate Audio", class_="btn-primary w-100 btn-lg mt-3 fw-bold"),
+            ui.input_action_button(
+                "btn_generate",
+                ui.TagList(icon_svg("wand-magic-sparkles"), "Clone Voice & Generate Audio"),
+                class_="btn-primary btn-generate w-100 btn-lg mt-3 fw-bold",
+            ),
         ),
         ui.div(
             {"class": "card-box"},
-            ui.h4("3. Cloned Voice Audio Output"),
+            ui.div(
+                {"class": "step-header"},
+                ui.span({"class": "step-number"}, "3"),
+                ui.h4({"class": "mb-0"}, "Cloned Voice Output"),
+            ),
             ui.output_ui("generation_status"),
             ui.output_ui("audio_result"),
         ),
     ),
+    theme=shinyswatch.theme.pulse,
 )
 
 
@@ -86,17 +153,26 @@ def server(input, output, session):
         if report is not None:
             if report["warnings"]:
                 quality_feedback = ui.div(
-                    ui.p("⚠️ Sample quality warnings (these cause robotic-sounding clones):", class_="fw-bold text-warning mb-1 mt-2"),
+                    ui.p(
+                        {"class": "fw-bold text-warning mb-1 mt-2 icon-inline"},
+                        icon_svg("triangle-exclamation"),
+                        "Sample quality warnings (these cause robotic-sounding clones):",
+                    ),
                     ui.tags.ul(*[ui.tags.li(w, class_="small text-warning") for w in report["warnings"]]),
                 )
             else:
                 quality_feedback = ui.p(
-                    f"✅ Good sample: {report['duration_seconds']:.1f}s, {report['sample_rate']} Hz, clean signal.",
-                    class_="small text-success mt-2",
+                    {"class": "small text-success mt-2 icon-inline"},
+                    icon_svg("circle-check"),
+                    f"Good sample: {report['duration_seconds']:.1f}s, {report['sample_rate']} Hz, clean signal.",
                 )
 
         return ui.div(
-            ui.p(f"Target Voice Loaded: {file_info['name']}", class_="fw-bold text-success mb-2"),
+            ui.p(
+                {"class": "fw-bold text-success mb-2 icon-inline"},
+                icon_svg("file-audio"),
+                f"Target Voice Loaded: {file_info['name']}",
+            ),
             ui.tags.audio(
                 controls=True,
                 src=f"data:audio/wav;base64,{b64_audio}",
@@ -151,9 +227,11 @@ def server(input, output, session):
     def generation_status():
         path = output_audio_path()
         if not path:
-            return ui.p("Click 'Clone Uploaded Voice & Generate Audio' when ready.", class_="text-muted")
-        return ui.div(
-            ui.p("✅ Voice clone audio ready! Conditioned directly on your uploaded reference sample.", class_="text-success fw-bold mb-1"),
+            return ui.p("Click 'Clone Voice & Generate Audio' when ready.", class_="text-muted")
+        return ui.p(
+            {"class": "text-success fw-bold mb-1 icon-inline"},
+            icon_svg("circle-check"),
+            "Voice clone audio ready! Conditioned directly on your uploaded reference sample.",
         )
 
     @render.ui
@@ -170,10 +248,11 @@ def server(input, output, session):
 
         download_buttons = [
             ui.tags.a(
-                "⬇️ Download WAV (24-bit lossless)",
+                icon_svg("download"),
+                "Download WAV (24-bit lossless)",
                 href=f"data:audio/wav;base64,{b64_wav}",
                 download="cloned_voice_output.wav",
-                class_="btn btn-success fw-semibold me-2",
+                class_="btn btn-success btn-download fw-semibold me-2",
             ),
         ]
         if mp3_path.exists():
@@ -181,10 +260,11 @@ def server(input, output, session):
                 b64_mp3 = base64.b64encode(f.read()).decode("utf-8")
             download_buttons.append(
                 ui.tags.a(
-                    "⬇️ Download MP3 (compressed)",
+                    icon_svg("download"),
+                    "Download MP3 (compressed)",
                     href=f"data:audio/mpeg;base64,{b64_mp3}",
                     download="cloned_voice_output.mp3",
-                    class_="btn btn-outline-success fw-semibold",
+                    class_="btn btn-outline-success btn-download fw-semibold",
                 )
             )
 

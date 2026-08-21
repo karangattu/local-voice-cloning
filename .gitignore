@@ -10,3 +10,4 @@ build/
 models/
 output.wav
 cloned_*.wav
+.claude/
