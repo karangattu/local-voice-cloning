@@ -13,57 +13,257 @@ cloner = LocalVoiceCloner()
 
 app_ui = ui.page_fluid(
     ui.tags.head(
+        ui.tags.link(
+            rel="preconnect",
+            href="https://fonts.googleapis.com",
+        ),
+        ui.tags.link(
+            rel="preconnect",
+            href="https://fonts.gstatic.com",
+            crossorigin="anonymous",
+        ),
+        ui.tags.link(
+            href="https://fonts.googleapis.com/css2?family=Mona+Sans:ital,wght@0,200..900;1,200..900&display=swap",
+            rel="stylesheet",
+        ),
         ui.tags.style(
             """
-            body { background: linear-gradient(160deg, #f4f1fb 0%, #eef4fd 100%); min-height: 100vh; }
-            .main-container { max-width: 960px; margin: 0 auto 48px; }
+            :root {
+                --minty-primary: #78c2ad;
+                --minty-primary-dark: #56a590;
+                --minty-primary-deep: #2f6b5b;
+                --minty-teal: #20c997;
+                --minty-soft-bg: #f2faf7;
+                --minty-card-border: rgba(120, 194, 173, 0.22);
+            }
+
+            * {
+                font-family: 'Mona Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+            }
+
+            body {
+                background: linear-gradient(165deg, #f0f9f6 0%, #e6f5ef 40%, #f4fbf8 100%);
+                min-height: 100vh;
+                color: #2c3e50;
+            }
+
+            .main-container {
+                max-width: 980px;
+                margin: 0 auto 56px;
+                padding: 0 16px;
+            }
+
             .hero {
-                background: linear-gradient(135deg, #593196 0%, #7b4fc9 55%, #3d7dd8 100%);
-                color: white; border-radius: 0 0 28px 28px;
-                padding: 44px 32px 36px; margin-bottom: 32px;
-                box-shadow: 0 12px 32px -12px rgba(89, 49, 150, 0.55);
+                background: linear-gradient(135deg, #2d7a66 0%, #4ea890 50%, #78c2ad 100%);
+                color: white;
+                border-radius: 0 0 32px 32px;
+                padding: 48px 32px 40px;
+                margin-bottom: 36px;
+                box-shadow: 0 16px 36px -12px rgba(45, 122, 102, 0.42);
+                position: relative;
+                overflow: hidden;
             }
-            .hero h1 { font-weight: 800; letter-spacing: -0.5px; }
+
+            .hero::before {
+                content: '';
+                position: absolute;
+                top: -60px;
+                right: -40px;
+                width: 240px;
+                height: 240px;
+                background: radial-gradient(circle, rgba(255, 255, 255, 0.15) 0%, transparent 70%);
+                border-radius: 50%;
+                pointer-events: none;
+            }
+
+            .hero h1 {
+                font-weight: 850;
+                letter-spacing: -0.8px;
+                font-size: 2.35rem;
+                margin-bottom: 8px;
+            }
+
+            .hero p {
+                font-size: 1.05rem;
+                letter-spacing: -0.1px;
+            }
+
             .hero .icon-badge {
-                display: inline-flex; align-items: center; justify-content: center;
-                width: 64px; height: 64px; border-radius: 18px;
-                background: rgba(255, 255, 255, 0.15); margin-bottom: 14px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 68px;
+                height: 68px;
+                border-radius: 20px;
+                background: rgba(255, 255, 255, 0.2);
+                margin-bottom: 16px;
+                backdrop-filter: blur(8px);
+                border: 1px solid rgba(255, 255, 255, 0.25);
+                box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
             }
-            .hero .icon-badge svg { width: 30px !important; height: 30px !important; margin: 0 !important; fill: white; }
+
+            .hero .icon-badge svg {
+                width: 32px !important;
+                height: 32px !important;
+                margin: 0 !important;
+                fill: white;
+            }
+
             .engine-badge {
-                display: inline-flex; align-items: center; gap: 8px;
-                background: rgba(255, 255, 255, 0.18); color: white;
-                padding: 7px 16px; border-radius: 999px;
-                font-weight: 600; font-size: 0.85rem; backdrop-filter: blur(4px);
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                background: rgba(255, 255, 255, 0.22);
+                color: white;
+                padding: 8px 20px;
+                border-radius: 999px;
+                font-weight: 600;
+                font-size: 0.88rem;
+                backdrop-filter: blur(8px);
+                border: 1px solid rgba(255, 255, 255, 0.28);
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
             }
-            .engine-badge svg { width: 14px; height: 14px; fill: #ffd95e; }
+
+            .engine-badge svg {
+                width: 14px;
+                height: 14px;
+                fill: #fff07c;
+            }
+
             .card-box {
-                background: white; padding: 28px; border-radius: 18px;
-                border: 1px solid rgba(89, 49, 150, 0.08);
-                box-shadow: 0 8px 24px -14px rgba(30, 24, 60, 0.25);
-                margin-bottom: 24px; transition: box-shadow 0.2s ease;
+                background: rgba(255, 255, 255, 0.92);
+                backdrop-filter: blur(12px);
+                padding: 30px;
+                border-radius: 22px;
+                border: 1px solid var(--minty-card-border);
+                box-shadow: 0 10px 30px -12px rgba(45, 122, 102, 0.16);
+                margin-bottom: 26px;
+                transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
             }
-            .card-box:hover { box-shadow: 0 12px 32px -14px rgba(89, 49, 150, 0.35); }
-            .step-header { display: flex; align-items: center; gap: 14px; margin-bottom: 6px; }
+
+            .card-box:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 14px 38px -12px rgba(45, 122, 102, 0.25);
+                border-color: rgba(120, 194, 173, 0.45);
+            }
+
+            .step-header {
+                display: flex;
+                align-items: center;
+                gap: 14px;
+                margin-bottom: 8px;
+            }
+
             .step-number {
-                display: inline-flex; align-items: center; justify-content: center;
-                min-width: 40px; height: 40px; border-radius: 12px;
-                background: linear-gradient(135deg, #593196, #7b4fc9);
-                color: white; font-weight: 700; font-size: 1.1rem;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                min-width: 42px;
+                height: 42px;
+                border-radius: 14px;
+                background: linear-gradient(135deg, #4ea890, #78c2ad);
+                color: white;
+                font-weight: 800;
+                font-size: 1.15rem;
+                box-shadow: 0 4px 12px rgba(78, 168, 144, 0.35);
             }
-            .step-header svg { width: 18px; height: 18px; fill: #593196; }
+
+            .step-header h4 {
+                font-weight: 750;
+                color: #213547;
+                letter-spacing: -0.3px;
+            }
+
             .btn-generate {
-                background: linear-gradient(135deg, #593196, #3d7dd8) !important;
-                border: none !important; padding: 14px !important;
-                border-radius: 12px !important; letter-spacing: 0.2px;
-                box-shadow: 0 8px 20px -8px rgba(89, 49, 150, 0.6);
-                transition: transform 0.15s ease, box-shadow 0.15s ease;
+                background: linear-gradient(135deg, #2d7a66 0%, #4ea890 50%, #78c2ad 100%) !important;
+                border: none !important;
+                padding: 16px !important;
+                border-radius: 14px !important;
+                font-weight: 750 !important;
+                font-size: 1.08rem !important;
+                letter-spacing: 0.1px;
+                color: white !important;
+                box-shadow: 0 8px 24px -6px rgba(45, 122, 102, 0.55);
+                transition: transform 0.18s ease, box-shadow 0.18s ease !important;
             }
-            .btn-generate:hover { transform: translateY(-1px); box-shadow: 0 12px 24px -8px rgba(89, 49, 150, 0.7); }
-            .btn-generate svg { width: 16px; height: 16px; fill: white; margin-right: 8px; }
-            .btn-download svg { width: 14px; height: 14px; margin-right: 8px; }
-            .icon-inline svg { width: 15px; height: 15px; margin-right: 6px; vertical-align: -2px; }
-            audio { border-radius: 10px; }
+
+            .btn-generate:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 14px 30px -6px rgba(45, 122, 102, 0.65) !important;
+                filter: brightness(1.04);
+            }
+
+            .btn-generate:active {
+                transform: translateY(0);
+            }
+
+            .btn-generate svg {
+                width: 18px;
+                height: 18px;
+                fill: white;
+                margin-right: 10px;
+                vertical-align: -2px;
+            }
+
+            .btn-download {
+                border-radius: 12px !important;
+                padding: 10px 18px !important;
+                font-weight: 650 !important;
+                transition: transform 0.15s ease, box-shadow 0.15s ease !important;
+            }
+
+            .btn-download:hover {
+                transform: translateY(-1px);
+            }
+
+            .btn-download svg {
+                width: 15px;
+                height: 15px;
+                margin-right: 8px;
+                vertical-align: -2px;
+            }
+
+            .icon-inline svg {
+                width: 16px;
+                height: 16px;
+                margin-right: 8px;
+                vertical-align: -2px;
+            }
+
+            .quality-box {
+                border-radius: 12px;
+                padding: 12px 16px;
+                margin-top: 12px;
+            }
+
+            .quality-good {
+                background-color: #eafaf1;
+                border: 1px solid #c2eed5;
+                color: #276749;
+            }
+
+            .quality-warn {
+                background-color: #fef9e7;
+                border: 1px solid #f9e79f;
+                color: #9a7d0a;
+            }
+
+            audio {
+                border-radius: 12px;
+                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+            }
+
+            .form-control, .form-select {
+                border-radius: 12px !important;
+                border: 1px solid #d1e7dd !important;
+                padding: 10px 14px !important;
+                transition: border-color 0.15s ease, box-shadow 0.15s ease !important;
+            }
+
+            .form-control:focus, .form-select:focus {
+                border-color: #78c2ad !important;
+                box-shadow: 0 0 0 0.25rem rgba(120, 194, 173, 0.25) !important;
+            }
             """
         )
     ),
@@ -71,11 +271,11 @@ app_ui = ui.page_fluid(
         {"class": "hero text-center"},
         ui.div({"class": "icon-badge"}, icon_svg("microphone-lines")),
         ui.h1("Voice Cloning Studio"),
-        ui.p("Clone any voice locally. Your audio never leaves this machine.", class_="mb-3 opacity-75"),
+        ui.p("Clone any voice locally with zero cloud dependencies. Your audio never leaves this device.", class_="mb-3 opacity-90"),
         ui.span(
             {"class": "engine-badge"},
             icon_svg("bolt"),
-            f"F5-TTS Engine | 24kHz HD | {cloner.device.upper()} accelerated | {cloner.default_nfe_step}-step max quality",
+            f"F5-TTS Diffusion Engine | 24kHz HD | {cloner.device.upper()} Accelerated | {cloner.default_nfe_step}-Step Quality",
         ),
     ),
     ui.div(
@@ -87,7 +287,7 @@ app_ui = ui.page_fluid(
                 ui.span({"class": "step-number"}, "1"),
                 ui.h4({"class": "mb-0"}, "Reference Voice Sample"),
             ),
-            ui.p("Upload the audio clip of the person's voice you want to clone. The first 12 seconds are used; the transcript is auto-detected via Whisper.", class_="text-muted small"),
+            ui.p("Upload a clear voice recording (e.g. 5–30s). The first 12 seconds are conditioned; transcript is auto-detected via Whisper.", class_="text-muted small"),
             ui.input_file("audio_file", "Upload Voice Sample (.wav, .mp3, .ogg, .flac, .m4a)", accept=[".wav", ".mp3", ".ogg", ".flac", ".m4a"], multiple=False),
             ui.output_ui("reference_preview"),
         ),
@@ -113,7 +313,7 @@ app_ui = ui.page_fluid(
             ui.input_action_button(
                 "btn_generate",
                 ui.TagList(icon_svg("wand-magic-sparkles"), "Clone Voice & Generate Audio"),
-                class_="btn-primary btn-generate w-100 btn-lg mt-3 fw-bold",
+                class_="btn-primary btn-generate w-100 btn-lg mt-3",
             ),
         ),
         ui.div(
@@ -127,7 +327,7 @@ app_ui = ui.page_fluid(
             ui.output_ui("audio_result"),
         ),
     ),
-    theme=shinyswatch.theme.pulse,
+    theme=shinyswatch.theme.minty,
 )
 
 
@@ -153,18 +353,22 @@ def server(input, output, session):
         if report is not None:
             if report["warnings"]:
                 quality_feedback = ui.div(
+                    {"class": "quality-box quality-warn"},
                     ui.p(
-                        {"class": "fw-bold text-warning mb-1 mt-2 icon-inline"},
+                        {"class": "fw-bold mb-1 icon-inline"},
                         icon_svg("triangle-exclamation"),
                         "Sample quality warnings (these cause robotic-sounding clones):",
                     ),
-                    ui.tags.ul(*[ui.tags.li(w, class_="small text-warning") for w in report["warnings"]]),
+                    ui.tags.ul(*[ui.tags.li(w, class_="small") for w in report["warnings"]]),
                 )
             else:
-                quality_feedback = ui.p(
-                    {"class": "small text-success mt-2 icon-inline"},
-                    icon_svg("circle-check"),
-                    f"Good sample: {report['duration_seconds']:.1f}s, {report['sample_rate']} Hz, clean signal.",
+                quality_feedback = ui.div(
+                    {"class": "quality-box quality-good"},
+                    ui.p(
+                        {"class": "small fw-semibold mb-0 icon-inline"},
+                        icon_svg("circle-check"),
+                        f"Optimal Voice Sample: {report['duration_seconds']:.1f}s, {report['sample_rate']} Hz, clean signal dynamics.",
+                    ),
                 )
 
         return ui.div(
@@ -249,7 +453,7 @@ def server(input, output, session):
         download_buttons = [
             ui.tags.a(
                 icon_svg("download"),
-                "Download WAV (24-bit lossless)",
+                "Download WAV (24-bit Lossless)",
                 href=f"data:audio/wav;base64,{b64_wav}",
                 download="cloned_voice_output.wav",
                 class_="btn btn-success btn-download fw-semibold me-2",
@@ -261,7 +465,7 @@ def server(input, output, session):
             download_buttons.append(
                 ui.tags.a(
                     icon_svg("download"),
-                    "Download MP3 (compressed)",
+                    "Download MP3 (Compressed)",
                     href=f"data:audio/mpeg;base64,{b64_mp3}",
                     download="cloned_voice_output.mp3",
                     class_="btn btn-outline-success btn-download fw-semibold",
