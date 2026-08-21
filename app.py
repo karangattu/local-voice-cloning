@@ -1,5 +1,9 @@
+import asyncio
 import base64
+import mimetypes
+import shutil
 import tempfile
+import uuid
 from pathlib import Path
 
 import shinyswatch
@@ -7,9 +11,18 @@ from faicons import icon_svg
 from shiny import App, reactive, render, ui
 
 from src.audio_utils import analyze_reference_audio, save_audio
-from src.cloner import LocalVoiceCloner
+from src.cloner import detect_device, get_shared_cloner, recommended_nfe_step
 
-cloner = LocalVoiceCloner()
+# Cheap to compute; does not construct the model, so the app can show the
+# expected device and quality before anything heavy has loaded.
+DEVICE = detect_device()
+DEFAULT_NFE_STEP = recommended_nfe_step(DEVICE)
+
+QUALITY_PRESETS = {
+    "fast": 16,
+    "balanced": 32,
+    "best": DEFAULT_NFE_STEP,
+}
 
 app_ui = ui.page_fluid(
     ui.tags.head(
@@ -205,6 +218,18 @@ app_ui = ui.page_fluid(
                 vertical-align: -2px;
             }
 
+            .btn-generate:disabled {
+                opacity: 0.65 !important;
+                transform: none !important;
+            }
+
+            .btn-cancel svg {
+                width: 14px;
+                height: 14px;
+                margin-right: 8px;
+                vertical-align: -2px;
+            }
+
             .btn-download {
                 border-radius: 12px !important;
                 padding: 10px 18px !important;
@@ -228,6 +253,15 @@ app_ui = ui.page_fluid(
                 height: 16px;
                 margin-right: 8px;
                 vertical-align: -2px;
+            }
+
+            .icon-inline.spin svg {
+                animation: spin 1.1s linear infinite;
+            }
+
+            @keyframes spin {
+                from { transform: rotate(0deg); }
+                to { transform: rotate(360deg); }
             }
 
             .quality-box {
@@ -271,11 +305,15 @@ app_ui = ui.page_fluid(
         {"class": "hero text-center"},
         ui.div({"class": "icon-badge"}, icon_svg("microphone-lines")),
         ui.h1("Voice Cloning Studio"),
-        ui.p("Clone any voice locally with zero cloud dependencies. Your audio never leaves this device.", class_="mb-3 opacity-90"),
+        ui.p(
+            "Voice synthesis runs entirely on this device. Your audio is not uploaded to a "
+            "cloud service. Model files download once, on first use.",
+            class_="mb-3 opacity-90",
+        ),
         ui.span(
             {"class": "engine-badge"},
             icon_svg("bolt"),
-            f"F5-TTS Diffusion Engine | 24kHz HD | {cloner.device.upper()} Accelerated | {cloner.default_nfe_step}-Step Quality",
+            f"F5-TTS Diffusion Engine | 24kHz HD | {DEVICE.upper()} Accelerated | Up to {DEFAULT_NFE_STEP}-Step Quality",
         ),
     ),
     ui.div(
@@ -287,7 +325,7 @@ app_ui = ui.page_fluid(
                 ui.span({"class": "step-number"}, "1"),
                 ui.h4({"class": "mb-0"}, "Reference Voice Sample"),
             ),
-            ui.p("Upload a clear voice recording (e.g. 5–30s). The first 12 seconds are conditioned; transcript is auto-detected via Whisper.", class_="text-muted small"),
+            ui.p("Upload a clear voice recording (e.g. 5-30s). The first 12 seconds are conditioned; the transcript is auto-detected via Whisper.", class_="text-muted small"),
             ui.input_file("audio_file", "Upload Voice Sample (.wav, .mp3, .ogg, .flac, .m4a)", accept=[".wav", ".mp3", ".ogg", ".flac", ".m4a"], multiple=False),
             ui.output_ui("reference_preview"),
         ),
@@ -308,12 +346,58 @@ app_ui = ui.page_fluid(
             ),
             ui.layout_columns(
                 ui.input_slider("speed", "Speaking Speed", min=0.6, max=1.6, value=1.0, step=0.05),
-                ui.input_slider("nfe_step", "Quality / Diffusion Steps (Higher = clearer)", min=16, max=96, value=cloner.default_nfe_step, step=4),
+                ui.input_radio_buttons(
+                    "quality_preset",
+                    "Quality",
+                    choices={
+                        "fast": f"Fast ({QUALITY_PRESETS['fast']} steps)",
+                        "balanced": f"Balanced ({QUALITY_PRESETS['balanced']} steps)",
+                        "best": f"Best ({QUALITY_PRESETS['best']} steps, hardware max)",
+                    },
+                    selected="best",
+                ),
             ),
-            ui.input_action_button(
-                "btn_generate",
-                ui.TagList(icon_svg("wand-magic-sparkles"), "Clone Voice & Generate Audio"),
-                class_="btn-primary btn-generate w-100 btn-lg mt-3",
+            ui.accordion(
+                ui.accordion_panel(
+                    "Advanced settings",
+                    ui.input_slider(
+                        "nfe_step",
+                        "Diffusion steps (set by the Quality preset above; drag to override)",
+                        min=8,
+                        max=128,
+                        value=DEFAULT_NFE_STEP,
+                        step=4,
+                    ),
+                    ui.input_slider(
+                        "cfg_strength",
+                        "Voice adherence strength (lower sounds more natural, less exact)",
+                        min=1.0,
+                        max=4.0,
+                        value=2.0,
+                        step=0.1,
+                    ),
+                    ui.input_text(
+                        "ref_text_override",
+                        "Reference transcript override",
+                        placeholder="Exact words spoken in the first 12 seconds of the upload. Leave blank for the automatic transcript.",
+                        width="100%",
+                    ),
+                    icon=icon_svg("sliders"),
+                ),
+                open=False,
+            ),
+            ui.div(
+                ui.input_action_button(
+                    "btn_generate",
+                    ui.TagList(icon_svg("wand-magic-sparkles"), "Clone Voice & Generate Audio"),
+                    class_="btn-primary btn-generate w-100 btn-lg mt-3",
+                ),
+                ui.input_action_button(
+                    "btn_cancel",
+                    ui.TagList(icon_svg("ban"), "Cancel"),
+                    class_="btn-outline-secondary btn-cancel w-100 mt-2",
+                    disabled=True,
+                ),
             ),
         ),
         ui.div(
@@ -331,8 +415,22 @@ app_ui = ui.page_fluid(
 )
 
 
+def _guess_mime_type(filename: str) -> str:
+    mime_type, _ = mimetypes.guess_type(filename)
+    return mime_type or "audio/wav"
+
+
 def server(input, output, session):
+    session_dir = Path(tempfile.gettempdir()) / "local-voice-cloning" / session.id
+    session_dir.mkdir(parents=True, exist_ok=True)
+    session.on_ended(lambda: shutil.rmtree(session_dir, ignore_errors=True))
+
     output_audio_path = reactive.value(None)
+
+    @reactive.effect
+    @reactive.event(input.quality_preset)
+    def _sync_quality_preset():
+        ui.update_slider("nfe_step", value=QUALITY_PRESETS[input.quality_preset()])
 
     @render.ui
     def reference_preview():
@@ -341,6 +439,7 @@ def server(input, output, session):
             return ui.p("No reference audio selected yet.", class_="text-muted small")
         file_info = file_infos[0]
         datapath = file_info["datapath"]
+        mime_type = _guess_mime_type(file_info["name"])
         with open(datapath, "rb") as f:
             b64_audio = base64.b64encode(f.read()).decode("utf-8")
 
@@ -367,7 +466,7 @@ def server(input, output, session):
                     ui.p(
                         {"class": "small fw-semibold mb-0 icon-inline"},
                         icon_svg("circle-check"),
-                        f"Optimal Voice Sample: {report['duration_seconds']:.1f}s, {report['sample_rate']} Hz, clean signal dynamics.",
+                        f"Recording checks passed: {report['duration_seconds']:.1f}s, {report['sample_rate']} Hz, clean signal levels.",
                     ),
                 )
 
@@ -379,11 +478,35 @@ def server(input, output, session):
             ),
             ui.tags.audio(
                 controls=True,
-                src=f"data:audio/wav;base64,{b64_audio}",
+                src=f"data:{mime_type};base64,{b64_audio}",
                 style="width: 100%;",
             ),
             quality_feedback,
         )
+
+    @reactive.extended_task
+    async def run_synthesis(
+        ref_path: str,
+        text: str,
+        ref_text: str,
+        speed: float,
+        nfe_step: int,
+        cfg_strength: float,
+    ):
+        def _work():
+            return get_shared_cloner().clone_voice(
+                reference_audio_path=ref_path,
+                text=text,
+                reference_text=ref_text,
+                speed=speed,
+                nfe_step=nfe_step,
+                cfg_strength=cfg_strength,
+            )
+
+        # get_shared_cloner() may need to load the model the first time this
+        # runs; asyncio.to_thread keeps both that load and the inference off
+        # the event loop, so the rest of the app stays responsive.
+        return await asyncio.to_thread(_work)
 
     @reactive.effect
     @reactive.event(input.btn_generate)
@@ -394,54 +517,81 @@ def server(input, output, session):
         if not file_infos:
             ui.notification_show("Please upload a reference audio sample first!", type="warning")
             return
-
         if not text.strip():
             ui.notification_show("Please enter text to synthesize!", type="warning")
             return
 
-        ref_path = file_infos[0]["datapath"]
-        try:
-            with ui.Progress(min=1, max=3) as p:
-                p.set(1, message="Transcribing and analyzing your reference voice...")
-                speed = float(input.speed())
-                nfe_step = int(input.nfe_step())
+        run_synthesis(
+            file_infos[0]["datapath"],
+            text,
+            input.ref_text_override() or "",
+            float(input.speed()),
+            int(input.nfe_step()),
+            float(input.cfg_strength()),
+        )
 
-                p.set(2, message="Synthesizing audio conditioned on your reference voice...")
-                result = cloner.clone_voice(
-                    reference_audio_path=ref_path,
-                    text=text,
-                    speed=speed,
-                    nfe_step=nfe_step,
-                )
+    @reactive.effect
+    @reactive.event(input.btn_cancel)
+    def handle_cancel():
+        run_synthesis.cancel()
+        ui.notification_show(
+            "Cancelled. The computation may finish briefly in the background before stopping.",
+            type="warning",
+        )
 
-                p.set(3, message="Saving 24-bit WAV master and MP3 versions...")
-                temp_dir = Path(tempfile.gettempdir())
-                wav_file = temp_dir / "cloned_uploaded_voice.wav"
-                mp3_file = temp_dir / "cloned_uploaded_voice.mp3"
-                save_audio(wav_file, result.audio, sample_rate=result.sample_rate)
-                save_audio(mp3_file, result.audio, sample_rate=result.sample_rate)
+    @reactive.effect
+    def _toggle_buttons():
+        running = run_synthesis.status() == "running"
+        ui.update_action_button("btn_generate", disabled=running)
+        ui.update_action_button("btn_cancel", disabled=not running)
 
-                output_audio_path.set(str(wav_file))
-                ui.notification_show("Voice cloned successfully with your uploaded audio!", type="message")
+    @reactive.effect
+    def _save_result():
+        if run_synthesis.status() != "success":
+            return
+        result = run_synthesis.result()
+        generation_id = uuid.uuid4().hex[:8]
+        wav_file = session_dir / f"clone_{generation_id}.wav"
+        mp3_file = session_dir / f"clone_{generation_id}.mp3"
+        save_audio(wav_file, result.audio, sample_rate=result.sample_rate)
+        save_audio(mp3_file, result.audio, sample_rate=result.sample_rate)
+        output_audio_path.set(str(wav_file))
+        ui.notification_show("Voice cloned successfully with your uploaded audio!", type="message")
 
-        except (ValueError, OSError, RuntimeError) as e:
-            ui.notification_show(f"Synthesis failed: {e!s}", type="error")
+    @reactive.effect
+    def _report_error():
+        if run_synthesis.status() != "error":
+            return
+        ui.notification_show(f"Synthesis failed: {run_synthesis.error()!s}", type="error")
 
     @render.ui
     def generation_status():
-        path = output_audio_path()
-        if not path:
-            return ui.p("Click 'Clone Voice & Generate Audio' when ready.", class_="text-muted")
-        return ui.p(
-            {"class": "text-success fw-bold mb-1 icon-inline"},
-            icon_svg("circle-check"),
-            "Voice clone audio ready! Conditioned directly on your uploaded reference sample.",
-        )
+        status = run_synthesis.status()
+        if status == "running":
+            return ui.p(
+                {"class": "text-primary fw-bold mb-1 icon-inline spin"},
+                icon_svg("spinner"),
+                "Generating your cloned voice. The first generation also downloads and loads the model, "
+                "which takes longer.",
+            )
+        if status == "error":
+            return ui.p(
+                {"class": "text-danger fw-bold mb-1 icon-inline"},
+                icon_svg("triangle-exclamation"),
+                "Generation failed. See the notification for details.",
+            )
+        if status == "success" and output_audio_path():
+            return ui.p(
+                {"class": "text-success fw-bold mb-1 icon-inline"},
+                icon_svg("circle-check"),
+                "Voice clone audio ready! Conditioned directly on your uploaded reference sample.",
+            )
+        return ui.p("Click 'Clone Voice & Generate Audio' when ready.", class_="text-muted")
 
     @render.ui
     def audio_result():
         path = output_audio_path()
-        if not path or not Path(path).exists():
+        if run_synthesis.status() != "success" or not path or not Path(path).exists():
             return ui.div()
 
         wav_path = Path(path)
