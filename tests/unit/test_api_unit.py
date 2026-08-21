@@ -1,3 +1,8 @@
+"""Fast tests for src/api.py: health, info, and request validation. None of
+these reach the real F5-TTS model, since validation fails before /synthesize
+calls it. See tests/integration/test_api_integration.py for a real synthesis
+end to end."""
+
 import numpy as np
 import pytest
 import soundfile as sf
@@ -61,28 +66,3 @@ def test_synthesize_rejects_empty_upload():
         data={"text": "Hello"},
     )
     assert response.status_code == 422
-
-
-def test_synthesize_wav(reference_wav):
-    with open(reference_wav, "rb") as f:
-        response = client.post(
-            "/synthesize",
-            files={"reference_audio": ("ref.wav", f, "audio/wav")},
-            data={"text": "Hello from the API test", "steps": "8", "output_format": "wav"},
-        )
-    assert response.status_code == 200
-    assert response.headers["content-type"] == "audio/wav"
-    assert float(response.headers["x-duration-seconds"]) > 0
-    assert len(response.content) > 1000
-
-
-def test_synthesize_mp3(reference_wav):
-    with open(reference_wav, "rb") as f:
-        response = client.post(
-            "/synthesize",
-            files={"reference_audio": ("ref.wav", f, "audio/wav")},
-            data={"text": "Hello again", "steps": "8", "output_format": "mp3"},
-        )
-    assert response.status_code == 200
-    assert response.headers["content-type"] == "audio/mpeg"
-    assert len(response.content) > 500

@@ -43,3 +43,7 @@ target-version = "py310"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 pythonpath = ["."]
+markers = [
+    "integration: exercises the real F5-TTS model; slow, downloads weights on first run",
+]
+addopts = "-m 'not integration'"
