@@ -36,6 +36,18 @@ class SynthesisResult:
     matched_voice: str
 
 
+_SENTENCE_END = (".", "!", "?", ",", ";", ":", "…", "。", "！", "？")
+
+
+def prepare_gen_text(text: str) -> str:
+    """F5-TTS derives pauses and intonation from punctuation; text without a
+    final stop renders flat, so append one."""
+    text = text.strip()
+    if text and not text.endswith(_SENTENCE_END):
+        text += "."
+    return text
+
+
 def recommended_nfe_step(device: str) -> int:
     """Highest diffusion step count the hardware can run at acceptable speed:
     GPU-accelerated devices get the full 64 steps, CPU falls back to 32."""
@@ -94,7 +106,7 @@ class LocalVoiceCloner:
         wav, sr_out, _ = self.f5.infer(
             ref_file=str(reference_audio_path),
             ref_text=reference_text.strip(),
-            gen_text=text.strip(),
+            gen_text=prepare_gen_text(text),
             nfe_step=nfe_step,
             cfg_strength=cfg_strength,
             sway_sampling_coef=sway_sampling_coef,

@@ -77,6 +77,10 @@ async def synthesize(
     ] = "",
     speed: Annotated[float, Form(ge=0.3, le=2.0, description="Speech speed factor")] = 1.0,
     steps: Annotated[int | None, Form(ge=8, le=128, description="Diffusion steps (default: hardware maximum)")] = None,
+    cfg_strength: Annotated[
+        float,
+        Form(ge=1.0, le=4.0, description="Voice adherence strength. Lower values sound more natural but less exact."),
+    ] = 2.0,
     output_format: Annotated[str, Form(description="Output audio format: wav or mp3")] = "wav",
 ):
     output_format = output_format.lower().lstrip(".")
@@ -108,6 +112,7 @@ async def synthesize(
                 reference_text=ref_text,
                 speed=speed,
                 nfe_step=steps,
+                cfg_strength=cfg_strength,
             )
             out_path = Path(tmpdir) / f"output.{output_format}"
             save_audio(out_path, result.audio, sample_rate=result.sample_rate)

@@ -51,6 +51,66 @@ def normalize_audio(
     return audio.astype(np.float32)
 
 
+def analyze_reference_audio(file_path: str | Path) -> dict:
+    """Score an uploaded voice sample for cloning suitability. Returns metrics
+    plus human-readable warnings; a flat or damaged sample is the main cause
+    of robotic-sounding clones."""
+    path = Path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Audio file not found: {file_path}")
+
+    data, sr = sf.read(str(path), dtype="float32")
+    if data.ndim > 1:
+        data = np.mean(data, axis=1)
+
+    duration = len(data) / sr if sr > 0 else 0.0
+    warnings: list[str] = []
+
+    if duration == 0.0:
+        return {
+            "duration_seconds": 0.0,
+            "sample_rate": sr,
+            "rms_db": float("-inf"),
+            "clipping_ratio": 0.0,
+            "silence_ratio": 1.0,
+            "warnings": ["The sample is empty."],
+        }
+
+    rms_db = float(20.0 * np.log10(np.sqrt(np.mean(data**2)) + 1e-9))
+    clipping_ratio = float(np.mean(np.abs(data) >= 0.999))
+
+    frame = max(1, int(sr * 0.02))
+    n_frames = len(data) // frame
+    if n_frames > 0:
+        frames = data[: n_frames * frame].reshape(n_frames, frame)
+        frame_rms_db = 20.0 * np.log10(np.sqrt(np.mean(frames**2, axis=1)) + 1e-9)
+        silence_ratio = float(np.mean(frame_rms_db < -45.0))
+    else:
+        silence_ratio = 0.0
+
+    if duration < 3.0:
+        warnings.append("The sample is shorter than 3 seconds. Use 5 to 12 seconds of speech.")
+    elif duration > 12.0:
+        warnings.append("The sample is longer than 12 seconds. Only the first 12 seconds are used.")
+    if clipping_ratio > 0.001:
+        warnings.append("The sample is clipped (distorted). Record again at a lower input level.")
+    if rms_db < -35.0:
+        warnings.append("The sample is very quiet. Record closer to the microphone.")
+    if silence_ratio > 0.4:
+        warnings.append("The sample contains long silences. They make the output slow and unnatural.")
+    if sr < 16000:
+        warnings.append(f"The sample rate is low ({sr} Hz). Use a recording of 24000 Hz or more.")
+
+    return {
+        "duration_seconds": float(duration),
+        "sample_rate": int(sr),
+        "rms_db": rms_db,
+        "clipping_ratio": clipping_ratio,
+        "silence_ratio": silence_ratio,
+        "warnings": warnings,
+    }
+
+
 def high_pass_filter(audio: np.ndarray, sample_rate: int, cutoff_hz: float = 50.0) -> np.ndarray:
     if len(audio) < 16:
         return audio

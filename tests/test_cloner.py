@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from src.cloner import LocalVoiceCloner, SynthesisResult, recommended_nfe_step
+from src.cloner import LocalVoiceCloner, SynthesisResult, prepare_gen_text, recommended_nfe_step
 
 
 @pytest.fixture
@@ -33,6 +33,17 @@ def test_recommended_nfe_step():
     assert recommended_nfe_step("mps") == 64
     assert recommended_nfe_step("cuda") == 64
     assert recommended_nfe_step("cpu") == 32
+
+
+def test_prepare_gen_text_adds_final_stop():
+    assert prepare_gen_text("Hello world") == "Hello world."
+    assert prepare_gen_text("  Hello world  ") == "Hello world."
+
+
+def test_prepare_gen_text_keeps_existing_punctuation():
+    assert prepare_gen_text("Hello world!") == "Hello world!"
+    assert prepare_gen_text("Is that so?") == "Is that so?"
+    assert prepare_gen_text("") == ""
 
 
 def test_clone_voice_synthesis(sample_voice_file):

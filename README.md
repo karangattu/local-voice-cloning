@@ -55,6 +55,7 @@ The file extension of `--output` sets the format (`.wav` or `.mp3`). You can als
 | `--ref-text` | auto | The transcript of the first 12 seconds of the voice sample. Leave it empty for the best result. |
 | `-s`, `--speed` | `1.0` | The speech speed factor |
 | `--steps` | hardware maximum | The quality level (diffusion steps) |
+| `--cfg-strength` | `2.0` | The voice adherence strength. Lower values sound more natural but less exact. |
 
 ## REST API
 
@@ -113,6 +114,7 @@ curl -X POST http://127.0.0.1:8001/synthesize \
 | `ref_text` | no | auto | The transcript of the first 12 seconds of the voice sample. Leave it empty for the best result. |
 | `speed` | no | `1.0` | The speech speed factor (0.3 to 2.0) |
 | `steps` | no | hardware maximum | The quality level (8 to 128 diffusion steps) |
+| `cfg_strength` | no | `2.0` | The voice adherence strength (1.0 to 4.0) |
 | `output_format` | no | `wav` | The output format (`wav` or `mp3`) |
 
 ### Response
@@ -144,6 +146,27 @@ with open("voice_sample.wav", "rb") as f:
 with open("cloned.mp3", "wb") as out:
     out.write(response.content)
 ```
+
+## Get a Natural Voice
+
+The voice sample controls the sound of the clone. A flat or damaged sample gives a robotic clone.
+
+Follow these rules for the voice sample:
+
+1. Record 5 to 12 seconds of natural speech.
+2. Record one speaker, with no music and no background noise.
+3. Speak full sentences with normal emotion. Do not read in a flat tone.
+4. Do not let the recording clip (distort). Keep the input level moderate.
+5. Remove long pauses from the sample. Long pauses make the output slow.
+
+Follow these rules for the text:
+
+1. Use normal punctuation. The model creates pauses and intonation from punctuation.
+2. Write full sentences.
+
+The web app examines each uploaded sample. It shows a warning when the sample has a problem.
+
+If the voice still sounds flat, decrease `cfg_strength` to a value between 1.5 and 2.0. Generate more than one time. Each run uses a different random seed, and some runs sound more natural than others.
 
 ## Quality
 

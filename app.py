@@ -4,7 +4,7 @@ from pathlib import Path
 
 from shiny import App, reactive, render, ui
 
-from src.audio_utils import save_audio
+from src.audio_utils import analyze_reference_audio, save_audio
 from src.cloner import LocalVoiceCloner
 
 cloner = LocalVoiceCloner()
@@ -76,6 +76,25 @@ def server(input, output, session):
         datapath = file_info["datapath"]
         with open(datapath, "rb") as f:
             b64_audio = base64.b64encode(f.read()).decode("utf-8")
+
+        try:
+            report = analyze_reference_audio(datapath)
+        except (ValueError, OSError, RuntimeError):
+            report = None
+
+        quality_feedback = ui.div()
+        if report is not None:
+            if report["warnings"]:
+                quality_feedback = ui.div(
+                    ui.p("⚠️ Sample quality warnings (these cause robotic-sounding clones):", class_="fw-bold text-warning mb-1 mt-2"),
+                    ui.tags.ul(*[ui.tags.li(w, class_="small text-warning") for w in report["warnings"]]),
+                )
+            else:
+                quality_feedback = ui.p(
+                    f"✅ Good sample: {report['duration_seconds']:.1f}s, {report['sample_rate']} Hz, clean signal.",
+                    class_="small text-success mt-2",
+                )
+
         return ui.div(
             ui.p(f"Target Voice Loaded: {file_info['name']}", class_="fw-bold text-success mb-2"),
             ui.tags.audio(
@@ -83,6 +102,7 @@ def server(input, output, session):
                 src=f"data:audio/wav;base64,{b64_audio}",
                 style="width: 100%;",
             ),
+            quality_feedback,
         )
 
     @reactive.effect

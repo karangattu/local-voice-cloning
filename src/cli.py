@@ -52,6 +52,12 @@ def parse_args(args=None):
         help="Speech speed factor (default: 1.0).",
     )
     parser.add_argument(
+        "--cfg-strength",
+        type=float,
+        default=2.0,
+        help="Voice adherence strength (default: 2.0). Lower values sound more natural but less exact.",
+    )
+    parser.add_argument(
         "--steps",
         type=int,
         default=None,
@@ -76,6 +82,7 @@ def main():
         reference_text=args.ref_text,
         speed=args.speed,
         nfe_step=args.steps,
+        cfg_strength=args.cfg_strength,
     )
 
     try:

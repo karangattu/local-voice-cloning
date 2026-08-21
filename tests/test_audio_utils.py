@@ -3,9 +3,11 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import soundfile as sf
 import torch
 
 from src.audio_utils import (
+    analyze_reference_audio,
     apply_fades,
     enhance_audio,
     high_pass_filter,
@@ -140,3 +142,51 @@ def test_enhance_audio_pipeline():
 def test_enhance_audio_empty():
     enhanced = enhance_audio(np.array([], dtype=np.float32), 24000)
     assert len(enhanced) == 0
+
+
+def test_analyze_reference_audio_good_sample(tmp_path):
+    sr = 24000
+    path = tmp_path / "good.wav"
+    tone = 0.3 * np.sin(2 * np.pi * 200 * np.linspace(0, 6.0, sr * 6, endpoint=False))
+    sf.write(str(path), tone.astype(np.float32), sr)
+
+    report = analyze_reference_audio(path)
+    assert report["duration_seconds"] == pytest.approx(6.0)
+    assert report["sample_rate"] == sr
+    assert report["warnings"] == []
+
+
+def test_analyze_reference_audio_short_sample(tmp_path):
+    sr = 24000
+    path = tmp_path / "short.wav"
+    sf.write(str(path), _make_tone(sr, seconds=1.0), sr)
+
+    report = analyze_reference_audio(path)
+    assert any("shorter than 3 seconds" in w for w in report["warnings"])
+
+
+def test_analyze_reference_audio_clipped_sample(tmp_path):
+    sr = 24000
+    path = tmp_path / "clipped.wav"
+    tone = np.clip(3.0 * _make_tone(sr, seconds=6.0), -1.0, 1.0)
+    sf.write(str(path), tone, sr)
+
+    report = analyze_reference_audio(path)
+    assert report["clipping_ratio"] > 0.001
+    assert any("clipped" in w for w in report["warnings"])
+
+
+def test_analyze_reference_audio_silent_sample(tmp_path):
+    sr = 24000
+    path = tmp_path / "silent.wav"
+    tone = np.concatenate([_make_tone(sr, seconds=2.0), np.zeros(sr * 4, dtype=np.float32)])
+    sf.write(str(path), tone, sr)
+
+    report = analyze_reference_audio(path)
+    assert report["silence_ratio"] > 0.4
+    assert any("long silences" in w for w in report["warnings"])
+
+
+def test_analyze_reference_audio_missing_file():
+    with pytest.raises(FileNotFoundError):
+        analyze_reference_audio("does_not_exist.wav")
