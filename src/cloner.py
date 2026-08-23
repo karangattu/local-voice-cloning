@@ -7,24 +7,26 @@ import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
+import f5_tts.infer.utils_infer as f5_utils
 import numpy as np
 import soundfile as sf
 import torch
 import torchaudio
-
-os.environ["PYTHONHASHSEED"] = "0"
-
-# torchaudio 2.9+ dropped its built-in decoders and requires the separate
-# torchcodec package for torchaudio.load(). F5-TTS calls torchaudio.load()
-# internally to read the reference file we hand it, and we do not want the
-# extra torchcodec dependency, so we substitute a soundfile-based loader with
-# the same call signature for the duration of that one call only (see
-# _torchaudio_soundfile_shim below). Nothing outside that call is affected.
-with warnings.catch_warnings():
-    warnings.simplefilter("ignore", DeprecationWarning)
-    from f5_tts.api import F5TTS
+from f5_tts.api import F5TTS
+from transformers.utils import logging as tf_logging
 
 from src.audio_utils import enhance_audio, load_audio
+
+os.environ["PYTHONHASHSEED"] = "0"
+tf_logging.disable_progress_bar()
+
+try:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        if getattr(f5_utils, "asr_pipe", None) is None:
+            f5_utils.initialize_asr_pipeline(device=f5_utils.device)
+except (RuntimeError, ValueError, OSError):
+    pass
 
 # F5-TTS internally clips the reference audio to its first 12 seconds
 # (see f5_tts.infer.utils_infer.preprocess_ref_audio_text). We enforce the
