@@ -1,8 +1,8 @@
-import asyncio
 import base64
 import mimetypes
 import shutil
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -11,407 +11,473 @@ from faicons import icon_svg
 from shiny import App, reactive, render, ui
 
 from src.audio_utils import analyze_reference_audio, save_audio
-from src.cloner import detect_device, get_shared_cloner, recommended_nfe_step
-
-# Cheap to compute; does not construct the model, so the app can show the
-# expected device and quality before anything heavy has loaded.
-DEVICE = detect_device()
-DEFAULT_NFE_STEP = recommended_nfe_step(DEVICE)
-
-QUALITY_PRESETS = {
-    "fast": 16,
-    "balanced": 32,
-    "best": DEFAULT_NFE_STEP,
-}
+from src.cloner import ENGINE_NAME, get_shared_cloner
+from src.progress import progress_snapshot, run_with_progress
 
 app_ui = ui.page_fluid(
     ui.tags.head(
-        ui.tags.link(
-            rel="preconnect",
-            href="https://fonts.googleapis.com",
-        ),
-        ui.tags.link(
-            rel="preconnect",
-            href="https://fonts.gstatic.com",
-            crossorigin="anonymous",
-        ),
-        ui.tags.link(
-            href="https://fonts.googleapis.com/css2?family=Mona+Sans:ital,wght@0,200..900;1,200..900&display=swap",
-            rel="stylesheet",
-        ),
+        ui.tags.meta(name="theme-color", content="#101017"),
         ui.tags.style(
             """
             :root {
-                --minty-primary: #78c2ad;
-                --minty-primary-dark: #56a590;
-                --minty-primary-deep: #2f6b5b;
-                --minty-teal: #20c997;
-                --minty-soft-bg: #f2faf7;
-                --minty-card-border: rgba(120, 194, 173, 0.22);
+                --bg: #101017;
+                --surface: #15151e;
+                --surface-raised: #1b1a25;
+                --surface-soft: #201e2a;
+                --border: #35323f;
+                --border-strong: #484352;
+                --text: #f5f2eb;
+                --muted: #aaa5b0;
+                --subtle: #77717f;
+                --mint: #72d8aa;
+                --mint-soft: #b6edd3;
+                --amber: #d7922f;
+                --amber-hover: #e7a243;
+                --danger: #ef7d79;
+                --focus: #f3b860;
             }
 
-            * {
-                font-family: 'Mona Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+            * { box-sizing: border-box; }
+
+            html, body {
+                background: var(--bg) !important;
+                color: var(--text) !important;
+                min-height: 100%;
             }
 
             body {
-                background: linear-gradient(165deg, #f0f9f6 0%, #e6f5ef 40%, #f4fbf8 100%);
-                min-height: 100vh;
-                color: #2c3e50;
+                margin: 0;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
+                font-size: 15px;
+                line-height: 1.45;
             }
 
-            .main-container {
-                max-width: 980px;
-                margin: 0 auto 56px;
-                padding: 0 16px;
-            }
+            .container-fluid { padding: 0 !important; }
 
-            .hero {
-                background: linear-gradient(135deg, #2d7a66 0%, #4ea890 50%, #78c2ad 100%);
-                color: white;
-                border-radius: 0 0 32px 32px;
-                padding: 48px 32px 40px;
-                margin-bottom: 36px;
-                box-shadow: 0 16px 36px -12px rgba(45, 122, 102, 0.42);
-                position: relative;
-                overflow: hidden;
-            }
+            .app-shell { min-height: 100vh; background: var(--bg); }
 
-            .hero::before {
-                content: '';
-                position: absolute;
-                top: -60px;
-                right: -40px;
-                width: 240px;
-                height: 240px;
-                background: radial-gradient(circle, rgba(255, 255, 255, 0.15) 0%, transparent 70%);
-                border-radius: 50%;
-                pointer-events: none;
-            }
-
-            .hero h1 {
-                font-weight: 850;
-                letter-spacing: -0.8px;
-                font-size: 2.35rem;
-                margin-bottom: 8px;
-            }
-
-            .hero p {
-                font-size: 1.05rem;
-                letter-spacing: -0.1px;
-            }
-
-            .hero .icon-badge {
-                display: inline-flex;
+            .app-header {
+                height: 76px;
+                padding: 0 30px;
+                display: grid;
+                grid-template-columns: 1fr auto 1fr;
                 align-items: center;
-                justify-content: center;
-                width: 68px;
-                height: 68px;
-                border-radius: 20px;
-                background: rgba(255, 255, 255, 0.2);
-                margin-bottom: 16px;
-                backdrop-filter: blur(8px);
-                border: 1px solid rgba(255, 255, 255, 0.25);
-                box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
+                border-bottom: 1px solid var(--border);
+                background: #111118;
             }
 
-            .hero .icon-badge svg {
-                width: 32px !important;
-                height: 32px !important;
-                margin: 0 !important;
-                fill: white;
-            }
-
-            .engine-badge {
-                display: inline-flex;
-                align-items: center;
-                gap: 8px;
-                background: rgba(255, 255, 255, 0.22);
-                color: white;
-                padding: 8px 20px;
-                border-radius: 999px;
-                font-weight: 600;
-                font-size: 0.88rem;
-                backdrop-filter: blur(8px);
-                border: 1px solid rgba(255, 255, 255, 0.28);
-                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
-            }
-
-            .engine-badge svg {
-                width: 14px;
-                height: 14px;
-                fill: #fff07c;
-            }
-
-            .card-box {
-                background: rgba(255, 255, 255, 0.92);
-                backdrop-filter: blur(12px);
-                padding: 30px;
-                border-radius: 22px;
-                border: 1px solid var(--minty-card-border);
-                box-shadow: 0 10px 30px -12px rgba(45, 122, 102, 0.16);
-                margin-bottom: 26px;
-                transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
-            }
-
-            .card-box:hover {
-                transform: translateY(-2px);
-                box-shadow: 0 14px 38px -12px rgba(45, 122, 102, 0.25);
-                border-color: rgba(120, 194, 173, 0.45);
-            }
-
-            .step-header {
+            .brand, .privacy-note, .engine-pill,
+            .section-title, .status-chip, .meta-row,
+            .transport-actions, .output-heading, .button-label {
                 display: flex;
                 align-items: center;
-                gap: 14px;
-                margin-bottom: 8px;
             }
 
-            .step-number {
+            .brand { gap: 14px; font-size: 20px; font-weight: 730; letter-spacing: -0.35px; }
+            .brand-mark {
+                width: 34px;
+                height: 34px;
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
-                min-width: 42px;
-                height: 42px;
-                border-radius: 14px;
-                background: linear-gradient(135deg, #4ea890, #78c2ad);
-                color: white;
-                font-weight: 800;
-                font-size: 1.15rem;
-                box-shadow: 0 4px 12px rgba(78, 168, 144, 0.35);
+                border: 1px solid var(--text);
+                border-radius: 10px;
+            }
+            .brand-mark svg { width: 18px; height: 18px; fill: var(--text); }
+
+            .privacy-note { justify-self: center; gap: 9px; color: var(--muted); }
+            .privacy-note svg { width: 15px; height: 15px; fill: var(--mint); }
+
+            .engine-pill {
+                justify-self: end;
+                gap: 9px;
+                min-height: 38px;
+                padding: 8px 13px;
+                border: 1px solid var(--border);
+                border-radius: 9px;
+                background: var(--surface);
+                color: #d8d3dd;
+                font-size: 13px;
+            }
+            .engine-pill svg { width: 14px; height: 14px; fill: var(--mint); }
+
+            .workspace {
+                display: grid;
+                grid-template-columns: minmax(0, 2.05fr) minmax(320px, 0.95fr);
+                min-height: 555px;
+                border-bottom: 1px solid var(--border);
             }
 
-            .step-header h4 {
-                font-weight: 750;
-                color: #213547;
-                letter-spacing: -0.3px;
+            .script-pane, .reference-pane { padding: 26px 29px 22px; }
+            .reference-pane { border-left: 1px solid var(--border); background: #121219; }
+
+            .section-title { gap: 10px; margin: 0 0 5px; font-size: 16px; font-weight: 720; }
+            .section-title svg, .output-heading svg { width: 15px; height: 15px; fill: var(--text); }
+            .section-copy { margin: 0 0 15px; color: var(--muted); font-size: 13px; }
+
+            .form-group { margin-bottom: 0; }
+            label.control-label { color: var(--text); font-weight: 650; margin-bottom: 9px; }
+
+            #speech_text {
+                min-height: 260px;
+                resize: vertical;
+                background: #14131c !important;
+                border: 1px solid var(--border-strong) !important;
+                border-radius: 8px !important;
+                color: var(--text) !important;
+                padding: 17px !important;
+                font-size: 15px !important;
+                line-height: 1.6 !important;
+                box-shadow: none !important;
+            }
+            #speech_text::placeholder, .form-control::placeholder { color: var(--subtle) !important; }
+
+            .field-footer {
+                display: flex;
+                justify-content: space-between;
+                margin-top: 8px;
+                color: var(--subtle);
+                font-size: 12px;
             }
 
-            .btn-generate {
-                background: linear-gradient(135deg, #2d7a66 0%, #4ea890 50%, #78c2ad 100%) !important;
-                border: none !important;
-                padding: 16px !important;
-                border-radius: 14px !important;
-                font-weight: 750 !important;
-                font-size: 1.08rem !important;
-                letter-spacing: 0.1px;
-                color: white !important;
-                box-shadow: 0 8px 24px -6px rgba(45, 122, 102, 0.55);
-                transition: transform 0.18s ease, box-shadow 0.18s ease !important;
+            .delivery-controls {
+                display: grid;
+                grid-template-columns: 1.45fr .75fr;
+                gap: 26px;
+                align-items: end;
+                margin-top: 20px;
             }
+            .delivery-controls .form-group { margin: 0; }
+            .settings-disclosure { margin-top: 14px; }
+            .accordion, .accordion-item { background: transparent !important; border: 0 !important; }
+            .accordion-item { border: 1px solid var(--border) !important; border-radius: 8px !important; overflow: hidden; }
+            .accordion-button {
+                background: var(--surface) !important;
+                color: #d5d0da !important;
+                min-height: 46px;
+                font-size: 13px;
+                box-shadow: none !important;
+            }
+            .accordion-button::after { filter: invert(1); opacity: .65; }
+            .accordion-body { background: var(--surface) !important; padding: 18px !important; }
 
-            .btn-generate:hover {
-                transform: translateY(-2px);
-                box-shadow: 0 14px 30px -6px rgba(45, 122, 102, 0.65) !important;
-                filter: brightness(1.04);
-            }
-
-            .btn-generate:active {
-                transform: translateY(0);
-            }
-
-            .btn-generate svg {
-                width: 18px;
-                height: 18px;
-                fill: white;
-                margin-right: 10px;
-                vertical-align: -2px;
-            }
-
-            .btn-generate:disabled {
-                opacity: 0.65 !important;
-                transform: none !important;
-            }
-
-            .btn-cancel svg {
-                width: 14px;
-                height: 14px;
-                margin-right: 8px;
-                vertical-align: -2px;
-            }
-
-            .btn-download {
-                border-radius: 12px !important;
-                padding: 10px 18px !important;
-                font-weight: 650 !important;
-                transition: transform 0.15s ease, box-shadow 0.15s ease !important;
-            }
-
-            .btn-download:hover {
-                transform: translateY(-1px);
-            }
-
-            .btn-download svg {
-                width: 15px;
-                height: 15px;
-                margin-right: 8px;
-                vertical-align: -2px;
-            }
-
-            .icon-inline svg {
-                width: 16px;
-                height: 16px;
-                margin-right: 8px;
-                vertical-align: -2px;
-            }
-
-            .icon-inline.spin svg {
-                animation: spin 1.1s linear infinite;
-            }
-
-            @keyframes spin {
-                from { transform: rotate(0deg); }
-                to { transform: rotate(360deg); }
-            }
-
-            .quality-box {
-                border-radius: 12px;
-                padding: 12px 16px;
-                margin-top: 12px;
-            }
-
-            .quality-good {
-                background-color: #eafaf1;
-                border: 1px solid #c2eed5;
-                color: #276749;
-            }
-
-            .quality-warn {
-                background-color: #fef9e7;
-                border: 1px solid #f9e79f;
-                color: #9a7d0a;
-            }
-
-            audio {
-                border-radius: 12px;
-                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
-            }
+            .quality-options .form-check { margin-right: 22px; }
+            .quality-options .shiny-options-group { display: flex; flex-wrap: wrap; gap: 6px; }
+            .form-check-input { background-color: #13121a; border-color: #77717f; }
+            .form-check-input:checked { background-color: var(--mint); border-color: var(--mint); }
 
             .form-control, .form-select {
-                border-radius: 12px !important;
-                border: 1px solid #d1e7dd !important;
-                padding: 10px 14px !important;
-                transition: border-color 0.15s ease, box-shadow 0.15s ease !important;
+                background: #13121a !important;
+                border: 1px solid var(--border-strong) !important;
+                color: var(--text) !important;
+                border-radius: 7px !important;
+                box-shadow: none !important;
+            }
+            .form-control:focus, .form-select:focus, button:focus-visible, a:focus-visible {
+                outline: 2px solid var(--focus) !important;
+                outline-offset: 2px;
             }
 
-            .form-control:focus, .form-select:focus {
-                border-color: #78c2ad !important;
-                box-shadow: 0 0 0 0.25rem rgba(120, 194, 173, 0.25) !important;
+            .reference-upload .form-group { margin: 0; }
+            .reference-upload .control-label { color: var(--muted); font-size: 12px; font-weight: 560; }
+            .reference-upload .input-group { border: 1px dashed var(--border-strong); border-radius: 8px; padding: 8px; }
+            .reference-upload .btn-file { background: var(--surface-soft); border: 1px solid var(--border-strong); color: var(--text); }
+
+            .reference-empty {
+                min-height: 205px;
+                margin-top: 18px;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                gap: 9px;
+                border: 1px solid var(--border);
+                border-radius: 8px;
+                background: var(--surface);
+                color: var(--muted);
+                text-align: center;
+            }
+            .reference-empty svg { width: 24px; height: 24px; fill: var(--mint); }
+
+            .reference-file {
+                margin-top: 18px;
+                padding: 15px;
+                border: 1px solid var(--border);
+                border-radius: 8px;
+                background: var(--surface);
+            }
+            .file-name { color: var(--text); font-weight: 650; overflow-wrap: anywhere; }
+            .file-caption { color: var(--muted); font-size: 12px; }
+            .reference-file audio { width: 100%; margin: 14px 0 6px; }
+
+            .meta-list { margin-top: 13px; border-top: 1px solid var(--border); padding-top: 9px; }
+            .meta-row { justify-content: space-between; gap: 20px; padding: 5px 0; color: var(--muted); font-size: 12px; }
+            .meta-row span:last-child { color: #d6d1da; font-variant-numeric: tabular-nums; }
+
+            .quality-box { margin-top: 12px; padding: 11px 12px; border-radius: 7px; font-size: 12px; }
+            .quality-good { border: 1px solid rgba(114,216,170,.35); color: var(--mint-soft); background: rgba(114,216,170,.07); }
+            .quality-warn { border: 1px solid rgba(215,146,47,.42); color: #f0c477; background: rgba(215,146,47,.08); }
+            .quality-box ul { margin: 7px 0 0; padding-left: 18px; }
+
+            .transport {
+                display: grid;
+                grid-template-columns: 230px minmax(0, 1fr);
+                min-height: 146px;
+                border-bottom: 1px solid var(--border);
+                background: #111118;
+            }
+            .transport-actions { padding: 22px 28px; border-right: 1px solid var(--border); align-items: stretch; flex-direction: column; justify-content: center; }
+            .btn-create {
+                min-height: 52px;
+                border: 1px solid #f0ae50 !important;
+                border-radius: 8px !important;
+                background: var(--amber) !important;
+                color: #171118 !important;
+                font-size: 15px !important;
+                font-weight: 760 !important;
+                box-shadow: 0 7px 18px rgba(215,146,47,.17) !important;
+            }
+            .btn-create:hover { background: var(--amber-hover) !important; }
+            .btn-create svg { width: 16px; height: 16px; margin-right: 9px; vertical-align: -2px; fill: currentColor; }
+            .btn-cancel { margin-top: 8px; color: var(--muted) !important; border-color: var(--border) !important; }
+            .action-caption { margin: 8px 0 0; color: var(--subtle); font-size: 11px; }
+
+            .progress-region { padding: 22px 29px 18px; min-width: 0; }
+            .progress-top { display: flex; justify-content: space-between; gap: 18px; margin-bottom: 19px; }
+            .progress-message { color: var(--text); font-weight: 650; }
+            .progress-detail { color: var(--muted); font-size: 12px; margin-top: 2px; }
+            .elapsed { color: var(--mint); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; }
+
+            .stage-track { position: relative; display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; }
+            .stage-track::before {
+                content: "";
+                position: absolute;
+                left: 10%; right: 10%; top: 13px;
+                height: 2px;
+                background: var(--border-strong);
+            }
+            .stage-fill {
+                position: absolute;
+                left: 10%; top: 13px;
+                height: 2px;
+                background: var(--mint);
+                transition: width .3s ease;
+            }
+            .stage { position: relative; z-index: 1; text-align: center; color: var(--subtle); }
+            .stage-dot {
+                width: 27px; height: 27px; margin: 0 auto 7px;
+                display: flex; align-items: center; justify-content: center;
+                border-radius: 50%; border: 1px solid var(--border-strong); background: #111118;
+            }
+            .stage-dot svg { width: 11px; height: 11px; fill: currentColor; }
+            .stage-label { color: inherit; font-size: 12px; font-weight: 700; }
+            .stage-detail { color: var(--subtle); font-size: 10px; margin-top: 2px; }
+            .stage.complete, .stage.active { color: var(--mint); }
+            .stage.complete .stage-dot { background: var(--mint); border-color: var(--mint); color: #0d2018; }
+            .stage.active .stage-dot { border: 3px solid var(--mint); box-shadow: 0 0 0 5px rgba(114,216,170,.12); }
+            .stage.error { color: var(--danger); }
+            .stage.error .stage-dot { border-color: var(--danger); }
+
+            @media (prefers-reduced-motion: no-preference) {
+                .stage.active .stage-dot { animation: pulse 1.45s ease-in-out infinite; }
+                @keyframes pulse { 50% { box-shadow: 0 0 0 9px rgba(114,216,170,.03); } }
+            }
+
+            .output-pane { padding: 19px 28px 28px; min-height: 192px; background: var(--bg); }
+            .output-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+            .output-heading { gap: 9px; font-size: 15px; font-weight: 720; }
+            .status-chip { gap: 7px; color: var(--muted); font-size: 12px; }
+            .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border-strong); }
+            .status-chip.ready { color: var(--mint); }
+            .status-chip.ready .status-dot { background: var(--mint); }
+            .output-surface { border: 1px solid var(--border); border-radius: 8px; background: #14131b; padding: 20px; }
+            .output-empty { display: flex; align-items: center; gap: 12px; color: var(--muted); min-height: 76px; }
+            .output-empty svg { width: 20px; height: 20px; fill: var(--subtle); }
+            .result-player { display: grid; grid-template-columns: minmax(260px, 1fr) auto; align-items: center; gap: 20px; }
+            .result-player audio { width: 100%; }
+            .download-group { display: flex; gap: 9px; flex-wrap: wrap; justify-content: flex-end; }
+            .btn-download { border: 1px solid var(--border-strong) !important; color: var(--text) !important; background: var(--surface) !important; border-radius: 7px !important; font-size: 12px !important; }
+            .btn-download:hover { border-color: var(--mint) !important; color: var(--mint-soft) !important; }
+            .btn-download svg { width: 13px; height: 13px; fill: currentColor; margin-right: 7px; vertical-align: -2px; }
+
+            @media (max-width: 940px) {
+                .app-header { grid-template-columns: 1fr auto; }
+                .privacy-note { display: none; }
+                .workspace { grid-template-columns: 1fr; }
+                .reference-pane { border-left: 0; border-top: 1px solid var(--border); }
+                .transport { grid-template-columns: 1fr; }
+                .transport-actions { border-right: 0; border-bottom: 1px solid var(--border); }
+                .result-player { grid-template-columns: 1fr; }
+                .download-group { justify-content: flex-start; }
+            }
+
+            @media (max-width: 620px) {
+                .app-header { height: auto; min-height: 72px; padding: 14px 18px; gap: 10px; }
+                .brand { font-size: 17px; }
+                .engine-pill { padding: 7px 9px; font-size: 0; }
+                .engine-pill svg { margin: 0; }
+                .script-pane, .reference-pane, .progress-region, .output-pane { padding-left: 18px; padding-right: 18px; }
+                .delivery-controls { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+                .delivery-controls .shiny-input-container { width: 100% !important; }
+                .stage-detail { display: none; }
+                .stage-label { font-size: 10px; }
             }
             """
-        )
-    ),
-    ui.div(
-        {"class": "hero text-center"},
-        ui.div({"class": "icon-badge"}, icon_svg("microphone-lines")),
-        ui.h1("Voice Cloning Studio"),
-        ui.p(
-            "Voice synthesis runs entirely on this device. Your audio is not uploaded to a "
-            "cloud service. Model files download once, on first use.",
-            class_="mb-3 opacity-90",
-        ),
-        ui.span(
-            {"class": "engine-badge"},
-            icon_svg("bolt"),
-            f"F5-TTS Diffusion Engine | 24kHz HD | {DEVICE.upper()} Accelerated | Up to {DEFAULT_NFE_STEP}-Step Quality",
         ),
     ),
     ui.div(
-        {"class": "main-container"},
-        ui.div(
-            {"class": "card-box"},
+        {"class": "app-shell"},
+        ui.tags.header(
+            {"class": "app-header"},
             ui.div(
-                {"class": "step-header"},
-                ui.span({"class": "step-number"}, "1"),
-                ui.h4({"class": "mb-0"}, "Reference Voice Sample"),
+                {"class": "brand"},
+                ui.span({"class": "brand-mark"}, icon_svg("wave-square")),
+                "Sona — Local Voice Studio",
             ),
-            ui.p("Upload a clear voice recording (e.g. 5-30s). The first 12 seconds are conditioned; the transcript is auto-detected via Whisper.", class_="text-muted small"),
-            ui.input_file("audio_file", "Upload Voice Sample (.wav, .mp3, .ogg, .flac, .m4a)", accept=[".wav", ".mp3", ".ogg", ".flac", ".m4a"], multiple=False),
-            ui.output_ui("reference_preview"),
+            ui.div(
+                {"class": "privacy-note"},
+                icon_svg("shield-halved"),
+                "Private session · nothing leaves your Mac",
+            ),
+            ui.output_ui("engine_badge"),
         ),
-        ui.div(
-            {"class": "card-box"},
+        ui.tags.main(
             ui.div(
-                {"class": "step-header"},
-                ui.span({"class": "step-number"}, "2"),
-                ui.h4({"class": "mb-0"}, "Speech Text to Generate"),
-            ),
-            ui.input_text_area(
-                "speech_text",
-                "Text for the cloned voice to speak:",
-                value="Hello! This audio was generated using your exact voice profile cloned locally.",
-                placeholder="Enter what you want your cloned voice to say...",
-                rows=3,
-                width="100%",
-            ),
-            ui.layout_columns(
-                ui.input_slider("speed", "Speaking Speed", min=0.6, max=1.6, value=1.0, step=0.05),
-                ui.input_radio_buttons(
-                    "quality_preset",
-                    "Quality",
-                    choices={
-                        "fast": f"Fast ({QUALITY_PRESETS['fast']} steps)",
-                        "balanced": f"Balanced ({QUALITY_PRESETS['balanced']} steps)",
-                        "best": f"Best ({QUALITY_PRESETS['best']} steps, hardware max)",
-                    },
-                    selected="best",
-                ),
-            ),
-            ui.accordion(
-                ui.accordion_panel(
-                    "Advanced settings",
-                    ui.input_slider(
-                        "nfe_step",
-                        "Diffusion steps (set by the Quality preset above; drag to override)",
-                        min=8,
-                        max=128,
-                        value=DEFAULT_NFE_STEP,
-                        step=4,
+                {"class": "workspace"},
+                ui.tags.section(
+                    {"class": "script-pane", "aria-labelledby": "script-heading"},
+                    ui.h2(
+                        {"class": "section-title", "id": "script-heading"},
+                        icon_svg("pen"),
+                        "Script",
                     ),
-                    ui.input_slider(
-                        "cfg_strength",
-                        "Voice adherence strength (lower sounds more natural, less exact)",
-                        min=1.0,
-                        max=4.0,
-                        value=2.0,
-                        step=0.1,
+                    ui.p(
+                        "Enter the text you want to synthesize with your cloned voice.",
+                        class_="section-copy",
                     ),
-                    ui.input_text(
-                        "ref_text_override",
-                        "Reference transcript override",
-                        placeholder="Exact words spoken in the first 12 seconds of the upload. Leave blank for the automatic transcript.",
+                    ui.input_text_area(
+                        "speech_text",
+                        None,
+                        value="Hello! This audio was generated using your voice profile, entirely on this Mac.",
+                        placeholder="Write the words you want the cloned voice to speak…",
+                        rows=9,
                         width="100%",
                     ),
-                    icon=icon_svg("sliders"),
+                    ui.div(
+                        {"class": "field-footer"},
+                        ui.span("Natural punctuation helps shape the delivery."),
+                        ui.output_text("character_count", inline=True),
+                    ),
+                    ui.div(
+                        {"class": "delivery-controls"},
+                        ui.div(
+                            {"class": "quality-options"},
+                            ui.input_radio_buttons(
+                                "quality",
+                                "Model quality",
+                                choices={
+                                    "high": "High fidelity · BF16",
+                                    "fast": "Fast draft · 8-bit",
+                                },
+                                selected="high",
+                                inline=True,
+                            ),
+                        ),
+                        ui.input_select(
+                            "language",
+                            "Output language",
+                            choices={
+                                "auto": "Auto detect",
+                                "English": "English",
+                                "Spanish": "Spanish",
+                                "French": "French",
+                                "German": "German",
+                                "Italian": "Italian",
+                                "Portuguese": "Portuguese",
+                                "Chinese": "Chinese",
+                                "Japanese": "Japanese",
+                                "Korean": "Korean",
+                                "Russian": "Russian",
+                            },
+                            selected="auto",
+                        ),
+                    ),
+                    ui.div(
+                        {"class": "settings-disclosure"},
+                        ui.accordion(
+                            ui.accordion_panel(
+                                "Advanced settings",
+                                ui.input_text_area(
+                                    "ref_text_override",
+                                    "Reference transcript",
+                                    placeholder="Optional: exact words spoken in the reference. Leave blank for local auto-transcription.",
+                                    rows=2,
+                                    width="100%",
+                                ),
+                                icon=icon_svg("sliders"),
+                            ),
+                            open=False,
+                        ),
+                    ),
                 ),
-                open=False,
-            ),
-            ui.div(
-                ui.input_action_button(
-                    "btn_generate",
-                    ui.TagList(icon_svg("wand-magic-sparkles"), "Clone Voice & Generate Audio"),
-                    class_="btn-primary btn-generate w-100 btn-lg mt-3",
+                ui.tags.aside(
+                    {"class": "reference-pane", "aria-labelledby": "reference-heading"},
+                    ui.h2(
+                        {"class": "section-title", "id": "reference-heading"},
+                        icon_svg("microphone"),
+                        "Voice reference",
+                    ),
+                    ui.p(
+                        "Upload 5–30 seconds of clean speech. The first 12 seconds create the voice profile.",
+                        class_="section-copy",
+                    ),
+                    ui.div(
+                        {"class": "reference-upload"},
+                        ui.input_file(
+                            "audio_file",
+                            "Choose a WAV, MP3, OGG, FLAC, or M4A file",
+                            accept=[".wav", ".mp3", ".ogg", ".flac", ".m4a"],
+                            multiple=False,
+                        ),
+                    ),
+                    ui.output_ui("reference_preview"),
                 ),
-                ui.input_action_button(
-                    "btn_cancel",
-                    ui.TagList(icon_svg("ban"), "Cancel"),
-                    class_="btn-outline-secondary btn-cancel w-100 mt-2",
-                    disabled=True,
+            ),
+            ui.tags.section(
+                {"class": "transport", "aria-label": "Audio generation progress"},
+                ui.div(
+                    {"class": "transport-actions"},
+                    ui.input_action_button(
+                        "btn_generate",
+                        ui.TagList(icon_svg("wave-square"), "Create audio"),
+                        class_="btn-create w-100",
+                    ),
+                    ui.input_action_button(
+                        "btn_cancel",
+                        "Cancel generation",
+                        class_="btn btn-outline-secondary btn-cancel w-100",
+                        disabled=True,
+                    ),
+                    ui.p("Runs locally with Qwen3-TTS 1.7B and Apple MLX.", class_="action-caption"),
                 ),
+                ui.output_ui("generation_progress"),
             ),
-        ),
-        ui.div(
-            {"class": "card-box"},
-            ui.div(
-                {"class": "step-header"},
-                ui.span({"class": "step-number"}, "3"),
-                ui.h4({"class": "mb-0"}, "Cloned Voice Output"),
+            ui.tags.section(
+                {"class": "output-pane", "aria-labelledby": "output-heading"},
+                ui.div(
+                    {"class": "output-header"},
+                    ui.h2(
+                        {"class": "output-heading", "id": "output-heading"},
+                        icon_svg("volume-high"),
+                        "Generated output",
+                    ),
+                    ui.output_ui("output_status"),
+                ),
+                ui.output_ui("audio_result"),
             ),
-            ui.output_ui("generation_status"),
-            ui.output_ui("audio_result"),
         ),
     ),
-    theme=shinyswatch.theme.minty,
+    theme=shinyswatch.theme.darkly,
 )
 
 
@@ -426,22 +492,39 @@ def server(input, output, session):
     session.on_ended(lambda: shutil.rmtree(session_dir, ignore_errors=True))
 
     output_audio_path = reactive.value(None)
+    generation_stage = reactive.value(None)
+    generation_started_at = reactive.value(None)
 
-    @reactive.effect
-    @reactive.event(input.quality_preset)
-    def _sync_quality_preset():
-        ui.update_slider("nfe_step", value=QUALITY_PRESETS[input.quality_preset()])
+    @render.ui
+    def engine_badge():
+        quality = input.quality() if input.quality() else "high"
+        label = "BF16" if quality == "high" else "8-bit"
+        return ui.div(
+            {"class": "engine-pill"},
+            icon_svg("microchip"),
+            f"{ENGINE_NAME} · {label} · Apple MLX",
+        )
+
+    @render.text
+    def character_count():
+        return f"{len(input.speech_text() or ''):,} / 5,000"
 
     @render.ui
     def reference_preview():
         file_infos = input.audio_file()
         if not file_infos:
-            return ui.p("No reference audio selected yet.", class_="text-muted small")
+            return ui.div(
+                {"class": "reference-empty"},
+                icon_svg("file-audio"),
+                ui.strong("No reference loaded"),
+                ui.span("Choose one clear recording to begin."),
+            )
+
         file_info = file_infos[0]
         datapath = file_info["datapath"]
         mime_type = _guess_mime_type(file_info["name"])
-        with open(datapath, "rb") as f:
-            b64_audio = base64.b64encode(f.read()).decode("utf-8")
+        with open(datapath, "rb") as audio_file:
+            b64_audio = base64.b64encode(audio_file.read()).decode("utf-8")
 
         try:
             report = analyze_reference_audio(datapath)
@@ -453,33 +536,35 @@ def server(input, output, session):
             if report["warnings"]:
                 quality_feedback = ui.div(
                     {"class": "quality-box quality-warn"},
-                    ui.p(
-                        {"class": "fw-bold mb-1 icon-inline"},
-                        icon_svg("triangle-exclamation"),
-                        "Sample quality warnings (these cause robotic-sounding clones):",
-                    ),
-                    ui.tags.ul(*[ui.tags.li(w, class_="small") for w in report["warnings"]]),
+                    ui.strong("This sample may reduce naturalness"),
+                    ui.tags.ul(*[ui.tags.li(w) for w in report["warnings"]]),
                 )
             else:
                 quality_feedback = ui.div(
                     {"class": "quality-box quality-good"},
-                    ui.p(
-                        {"class": "small fw-semibold mb-0 icon-inline"},
-                        icon_svg("circle-check"),
-                        f"Recording checks passed: {report['duration_seconds']:.1f}s, {report['sample_rate']} Hz, clean signal levels.",
-                    ),
+                    "Reference quality checks passed.",
                 )
 
+        duration = report["duration_seconds"] if report else 0.0
+        sample_rate = report["sample_rate"] if report else 0
+        used = min(duration, 12.0)
         return ui.div(
-            ui.p(
-                {"class": "fw-bold text-success mb-2 icon-inline"},
-                icon_svg("file-audio"),
-                f"Target Voice Loaded: {file_info['name']}",
+            {"class": "reference-file"},
+            ui.div({"class": "file-name"}, file_info["name"]),
+            ui.div(
+                {"class": "file-caption"},
+                f"{duration:.1f}s recording · first {used:.1f}s used",
             ),
             ui.tags.audio(
                 controls=True,
+                preload="metadata",
                 src=f"data:{mime_type};base64,{b64_audio}",
-                style="width: 100%;",
+            ),
+            ui.div(
+                {"class": "meta-list"},
+                ui.div({"class": "meta-row"}, ui.span("Format"), ui.span(Path(file_info["name"]).suffix.lstrip(".").upper() or "Audio")),
+                ui.div({"class": "meta-row"}, ui.span("Sample rate"), ui.span(f"{sample_rate:,} Hz")),
+                ui.div({"class": "meta-row"}, ui.span("Profile window"), ui.span(f"00:00 – 00:{used:04.1f}")),
             ),
             quality_feedback,
         )
@@ -489,55 +574,48 @@ def server(input, output, session):
         ref_path: str,
         text: str,
         ref_text: str,
-        speed: float,
-        nfe_step: int,
-        cfg_strength: float,
+        quality: str,
+        language: str,
     ):
-        def _work():
-            return get_shared_cloner().clone_voice(
+        def work(report):
+            return get_shared_cloner(quality).clone_voice(
                 reference_audio_path=ref_path,
                 text=text,
                 reference_text=ref_text,
-                speed=speed,
-                nfe_step=nfe_step,
-                cfg_strength=cfg_strength,
+                language=language,
+                progress_callback=report,
             )
 
-        # get_shared_cloner() may need to load the model the first time this
-        # runs; asyncio.to_thread keeps both that load and the inference off
-        # the event loop, so the rest of the app stays responsive.
-        return await asyncio.to_thread(_work)
+        return await run_with_progress(work, generation_stage.set)
 
     @reactive.effect
     @reactive.event(input.btn_generate)
     def handle_synthesis():
         file_infos = input.audio_file()
         text = input.speech_text()
-
         if not file_infos:
-            ui.notification_show("Please upload a reference audio sample first!", type="warning")
+            ui.notification_show("Add a reference recording before creating audio.", type="warning")
             return
         if not text.strip():
-            ui.notification_show("Please enter text to synthesize!", type="warning")
+            ui.notification_show("Write a script before creating audio.", type="warning")
             return
 
+        output_audio_path.set(None)
+        generation_stage.set("prepare")
+        generation_started_at.set(time.monotonic())
         run_synthesis(
             file_infos[0]["datapath"],
             text,
             input.ref_text_override() or "",
-            float(input.speed()),
-            int(input.nfe_step()),
-            float(input.cfg_strength()),
+            input.quality() or "high",
+            input.language() or "auto",
         )
 
     @reactive.effect
     @reactive.event(input.btn_cancel)
     def handle_cancel():
         run_synthesis.cancel()
-        ui.notification_show(
-            "Cancelled. The computation may finish briefly in the background before stopping.",
-            type="warning",
-        )
+        ui.notification_show("Generation cancelled.", type="warning")
 
     @reactive.effect
     def _toggle_buttons():
@@ -556,7 +634,7 @@ def server(input, output, session):
         save_audio(wav_file, result.audio, sample_rate=result.sample_rate)
         save_audio(mp3_file, result.audio, sample_rate=result.sample_rate)
         output_audio_path.set(str(wav_file))
-        ui.notification_show("Voice cloned successfully with your uploaded audio!", type="message")
+        ui.notification_show("Your cloned voice is ready.", type="message")
 
     @reactive.effect
     def _report_error():
@@ -565,71 +643,130 @@ def server(input, output, session):
         ui.notification_show(f"Synthesis failed: {run_synthesis.error()!s}", type="error")
 
     @render.ui
-    def generation_status():
+    def generation_progress():
         status = run_synthesis.status()
-        if status == "running":
-            return ui.p(
-                {"class": "text-primary fw-bold mb-1 icon-inline spin"},
-                icon_svg("spinner"),
-                "Generating your cloned voice. The first generation also downloads and loads the model, "
-                "which takes longer.",
+        stage = generation_stage()
+        snapshot = progress_snapshot(stage, status)
+        active_index = next((index for index, item in enumerate(snapshot) if item.state in {"active", "error"}), 0)
+        if status == "success":
+            fill_width = 80
+            message, detail = "Audio ready", "The cloned voice is ready to play and download."
+        elif status == "error":
+            fill_width = (active_index / 3) * 80
+            message, detail = "Generation stopped", "Review the error notification and try again."
+        elif status == "running":
+            fill_width = (active_index / 3) * 80
+            message, detail = "Synthesizing natural speech", snapshot[active_index].detail
+        else:
+            fill_width = 0
+            message, detail = "Ready to create", "Progress will update here during synthesis."
+
+        started = generation_started_at()
+        elapsed = 0
+        if started is not None:
+            if status == "running":
+                reactive.invalidate_later(1)
+            elapsed = max(0, int(time.monotonic() - started))
+
+        stage_nodes = []
+        for step in snapshot:
+            if step.state == "complete":
+                marker = icon_svg("check")
+            elif step.state == "error":
+                marker = icon_svg("exclamation")
+            else:
+                marker = icon_svg("circle")
+            stage_nodes.append(
+                ui.div(
+                    {"class": f"stage {step.state}"},
+                    ui.div({"class": "stage-dot"}, marker),
+                    ui.div({"class": "stage-label"}, step.label),
+                    ui.div({"class": "stage-detail"}, step.detail),
+                )
             )
-        if status == "error":
-            return ui.p(
-                {"class": "text-danger fw-bold mb-1 icon-inline"},
-                icon_svg("triangle-exclamation"),
-                "Generation failed. See the notification for details.",
+
+        return ui.div(
+            {"class": "progress-region"},
+            ui.div(
+                {"class": "progress-top"},
+                ui.div(
+                    ui.div({"class": "progress-message"}, message),
+                    ui.div({"class": "progress-detail", "aria-live": "polite"}, detail),
+                ),
+                ui.div(
+                    ui.div({"class": "progress-detail"}, "Elapsed"),
+                    ui.div({"class": "elapsed"}, f"{elapsed // 60:02d}:{elapsed % 60:02d}"),
+                ),
+            ),
+            ui.div(
+                {"class": "stage-track"},
+                ui.div({"class": "stage-fill", "style": f"width: {fill_width:.1f}%"}),
+                *stage_nodes,
+            ),
+        )
+
+    @render.ui
+    def output_status():
+        if run_synthesis.status() == "success" and output_audio_path():
+            return ui.div(
+                {"class": "status-chip ready"},
+                ui.span({"class": "status-dot"}),
+                "Ready to play",
             )
-        if status == "success" and output_audio_path():
-            return ui.p(
-                {"class": "text-success fw-bold mb-1 icon-inline"},
-                icon_svg("circle-check"),
-                "Voice clone audio ready! Conditioned directly on your uploaded reference sample.",
-            )
-        return ui.p("Click 'Clone Voice & Generate Audio' when ready.", class_="text-muted")
+        return ui.div(
+            {"class": "status-chip"},
+            ui.span({"class": "status-dot"}),
+            "Waiting for audio",
+        )
 
     @render.ui
     def audio_result():
         path = output_audio_path()
         if run_synthesis.status() != "success" or not path or not Path(path).exists():
-            return ui.div()
+            return ui.div(
+                {"class": "output-surface output-empty"},
+                icon_svg("music"),
+                ui.div(
+                    ui.strong("Your synthesized audio will appear here"),
+                    ui.div("Playback and downloads unlock when generation finishes.", class_="file-caption"),
+                ),
+            )
 
         wav_path = Path(path)
         mp3_path = wav_path.with_suffix(".mp3")
+        with open(wav_path, "rb") as wav_file:
+            b64_wav = base64.b64encode(wav_file.read()).decode("utf-8")
 
-        with open(wav_path, "rb") as f:
-            b64_wav = base64.b64encode(f.read()).decode("utf-8")
-
-        download_buttons = [
+        buttons = [
             ui.tags.a(
                 icon_svg("download"),
-                "Download WAV (24-bit Lossless)",
+                "Download WAV",
                 href=f"data:audio/wav;base64,{b64_wav}",
                 download="cloned_voice_output.wav",
-                class_="btn btn-success btn-download fw-semibold me-2",
-            ),
+                class_="btn btn-download",
+            )
         ]
         if mp3_path.exists():
-            with open(mp3_path, "rb") as f:
-                b64_mp3 = base64.b64encode(f.read()).decode("utf-8")
-            download_buttons.append(
+            with open(mp3_path, "rb") as mp3_file:
+                b64_mp3 = base64.b64encode(mp3_file.read()).decode("utf-8")
+            buttons.append(
                 ui.tags.a(
                     icon_svg("download"),
-                    "Download MP3 (Compressed)",
+                    "Download MP3",
                     href=f"data:audio/mpeg;base64,{b64_mp3}",
                     download="cloned_voice_output.mp3",
-                    class_="btn btn-outline-success btn-download fw-semibold",
+                    class_="btn btn-download",
                 )
             )
 
         return ui.div(
+            {"class": "output-surface result-player"},
             ui.tags.audio(
                 controls=True,
                 autoplay=True,
                 src=f"data:audio/wav;base64,{b64_wav}",
-                style="width: 100%; margin-bottom: 14px;",
             ),
-            ui.div(*download_buttons),
+            ui.div({"class": "download-group"}, *buttons),
         )
 
 

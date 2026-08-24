@@ -1,5 +1,5 @@
 """Real-model tests for src/cloner.py. These download and run the actual
-F5-TTS weights and are slow. Run with: pytest -m integration
+Qwen3-TTS MLX weights and are slow. Run with: pytest -m integration
 See tests/unit/test_cloner_unit.py for the fast, mocked equivalents."""
 
 import tempfile
@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from src.cloner import LocalVoiceCloner, SynthesisResult, recommended_nfe_step
+from src.cloner import LocalVoiceCloner, SynthesisResult
 
 pytestmark = pytest.mark.integration
 
@@ -30,9 +30,9 @@ def sample_voice_file():
 
 def test_cloner_initialization():
     cloner = LocalVoiceCloner()
-    assert cloner.f5 is not None
+    assert cloner.model_loaded is False
     assert cloner.sample_rate == 24000
-    assert cloner.default_nfe_step == recommended_nfe_step(cloner.device)
+    assert cloner.device == "mlx"
 
 
 def test_clone_voice_synthesis(sample_voice_file):
@@ -40,8 +40,8 @@ def test_clone_voice_synthesis(sample_voice_file):
     result = cloner.clone_voice(
         reference_audio_path=sample_voice_file,
         text="Testing zero-shot cloned voice output.",
+        reference_text="A steady synthetic tone.",
         speed=1.0,
-        nfe_step=8,
     )
     assert isinstance(result, SynthesisResult)
     assert result.sample_rate == 24000

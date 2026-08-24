@@ -18,7 +18,20 @@ def test_main_successful_run(tmp_path):
     t = np.linspace(0, 2.0, sr * 2, endpoint=False)
     sf.write(str(ref_file), (0.3 * np.sin(2 * np.pi * 200 * t)).astype(np.float32), sr)
 
-    with patch("sys.argv", ["cli.py", "-r", str(ref_file), "-t", "Hello test", "-o", str(out_file), "--steps", "8"]):
+    with patch(
+        "sys.argv",
+        [
+            "cli.py",
+            "-r",
+            str(ref_file),
+            "-t",
+            "Hello test",
+            "--ref-text",
+            "A steady synthetic tone.",
+            "-o",
+            str(out_file),
+        ],
+    ):
         main()
 
     assert out_file.exists()

@@ -1,7 +1,4 @@
-"""Fast tests for src/api.py: health, info, and request validation. None of
-these reach the real F5-TTS model, since validation fails before /synthesize
-calls it. See tests/integration/test_api_integration.py for a real synthesis
-end to end."""
+"""Fast tests for API metadata and request validation."""
 
 import numpy as np
 import pytest
@@ -33,8 +30,26 @@ def test_info():
     response = client.get("/info")
     assert response.status_code == 200
     body = response.json()
-    assert body["engine"] == "F5-TTS"
-    assert body["default_quality_steps"] in (32, 64)
+    assert body["engine"] == "Qwen3-TTS 1.7B"
+    assert body["device"] == "mlx"
+    assert body["default_quality"] == "high"
+    assert body["quality_models"] == {
+        "fast": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit",
+        "high": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",
+    }
+    assert body["supported_languages"] == [
+        "auto",
+        "Chinese",
+        "English",
+        "French",
+        "German",
+        "Italian",
+        "Japanese",
+        "Korean",
+        "Portuguese",
+        "Russian",
+        "Spanish",
+    ]
     assert body["supported_output_formats"] == ["mp3", "wav"]
 
 
@@ -66,3 +81,25 @@ def test_synthesize_rejects_empty_upload():
         data={"text": "Hello"},
     )
     assert response.status_code == 422
+
+
+def test_synthesize_rejects_unknown_quality(reference_wav):
+    with open(reference_wav, "rb") as f:
+        response = client.post(
+            "/synthesize",
+            files={"reference_audio": ("ref.wav", f, "audio/wav")},
+            data={"text": "Hello", "quality": "ultra"},
+        )
+    assert response.status_code == 422
+    assert "Unknown quality" in response.json()["detail"]
+
+
+def test_synthesize_rejects_unknown_language(reference_wav):
+    with open(reference_wav, "rb") as f:
+        response = client.post(
+            "/synthesize",
+            files={"reference_audio": ("ref.wav", f, "audio/wav")},
+            data={"text": "Hello", "language": "Klingon"},
+        )
+    assert response.status_code == 422
+    assert "Unsupported language" in response.json()["detail"]

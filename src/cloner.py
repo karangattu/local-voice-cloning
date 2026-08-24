@@ -1,67 +1,39 @@
-import contextlib
-import os
-import random
 import tempfile
 import threading
-import warnings
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
-import f5_tts.infer.utils_infer as f5_utils
 import numpy as np
 import soundfile as sf
-import torch
-import torchaudio
-from f5_tts.api import F5TTS
-from transformers.utils import logging as tf_logging
+from mlx_audio.stt.utils import load_model as load_stt_model
+from mlx_audio.tts.utils import load_model as load_tts_model
 
 from src.audio_utils import enhance_audio, load_audio
 
-os.environ["PYTHONHASHSEED"] = "0"
-tf_logging.disable_progress_bar()
-
-try:
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        if getattr(f5_utils, "asr_pipe", None) is None:
-            f5_utils.initialize_asr_pipeline(device=f5_utils.device)
-except (RuntimeError, ValueError, OSError):
-    pass
-
-# F5-TTS internally clips the reference audio to its first 12 seconds
-# (see f5_tts.infer.utils_infer.preprocess_ref_audio_text). We enforce the
-# same limit ourselves so the truncation point is deterministic and matches
-# what the UI and docs tell the user, instead of relying on F5-TTS's own
-# silence-search heuristic to land in the same place.
 MAX_REFERENCE_SECONDS = 12.0
-
-
-def _shim_torchaudio_load(filepath, frame_offset=0, num_frames=-1, normalize=True, channels_first=True, **kwargs):
-    if not normalize or not channels_first:
-        raise NotImplementedError(
-            "The local torchaudio.load shim only supports normalize=True and "
-            "channels_first=True (F5-TTS does not request other combinations)."
-        )
-    data, sr = sf.read(str(filepath), dtype="float32")
-    if frame_offset or num_frames != -1:
-        end = None if num_frames == -1 else frame_offset + num_frames
-        data = data[frame_offset:end]
-    tensor = torch.from_numpy(data).float()
-    tensor = tensor.unsqueeze(0) if tensor.ndim == 1 else tensor.transpose(0, 1)
-    return tensor, sr
-
-
-@contextlib.contextmanager
-def _torchaudio_soundfile_shim():
-    """Temporarily replace torchaudio.load with a soundfile-based equivalent,
-    scoped to the single F5-TTS inference call that needs it, then restore
-    the original attribute."""
-    original_load = torchaudio.load
-    torchaudio.load = _shim_torchaudio_load
-    try:
-        yield
-    finally:
-        torchaudio.load = original_load
+LINE_BREAK_PAUSE_SECONDS = 0.4
+ENGINE_NAME = "Qwen3-TTS 1.7B"
+ASR_MODEL_ID = "mlx-community/whisper-large-v3-turbo-asr-fp16"
+MODEL_VARIANTS = {
+    "high": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",
+    "fast": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit",
+}
+SUPPORTED_LANGUAGES = (
+    "auto",
+    "Chinese",
+    "English",
+    "French",
+    "German",
+    "Italian",
+    "Japanese",
+    "Korean",
+    "Portuguese",
+    "Russian",
+    "Spanish",
+)
+ProgressCallback = Callable[[str], None]
 
 
 @dataclass
@@ -76,45 +48,79 @@ _SENTENCE_END = (".", "!", "?", ",", ";", ":", "…", "。", "！", "？")
 
 
 def prepare_gen_text(text: str) -> str:
-    """F5-TTS derives pauses and intonation from punctuation; text without a
-    final stop renders flat, so append one."""
     text = text.strip()
     if text and not text.endswith(_SENTENCE_END):
         text += "."
     return text
 
 
+def _script_segments(text: str) -> list[tuple[str, int]]:
+    segments: list[tuple[str, int]] = []
+    pending_newlines = 0
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    for index, line in enumerate(normalized.split("\n")):
+        if index:
+            pending_newlines += 1
+        prepared = prepare_gen_text(line)
+        if not prepared:
+            continue
+        segments.append((prepared, pending_newlines if segments else 0))
+        pending_newlines = 0
+    return segments
+
+
+def model_id_for_quality(quality: str) -> str:
+    try:
+        return MODEL_VARIANTS[quality]
+    except KeyError as exc:
+        choices = ", ".join(sorted(MODEL_VARIANTS))
+        raise ValueError(f"Unknown quality '{quality}'. Choose one of: {choices}.") from exc
+
+
 def detect_device() -> str:
-    """Pick the best available compute device without loading any model
-    weights, so callers can show device and quality information before
-    paying the cost of a real model load."""
-    if torch.backends.mps.is_available():
-        return "mps"
-    if torch.cuda.is_available():
-        return "cuda"
-    return "cpu"
-
-
-def recommended_nfe_step(device: str) -> int:
-    """Highest diffusion step count the hardware can run at acceptable speed:
-    GPU-accelerated devices get the full 64 steps, CPU falls back to 32."""
-    return 64 if device in ("cuda", "mps") else 32
+    """MLX uses Apple Silicon's unified-memory GPU backend."""
+    return "mlx"
 
 
 class LocalVoiceCloner:
-    def __init__(self, device: str | None = None, sample_rate: int = 24000) -> None:
+    def __init__(
+        self,
+        quality: str = "high",
+        sample_rate: int = 24000,
+        tts_loader: Callable[[str], Any] = load_tts_model,
+        stt_loader: Callable[[str], Any] = load_stt_model,
+    ) -> None:
+        self.quality = quality
+        self.model_id = model_id_for_quality(quality)
         self.sample_rate = sample_rate
-        self.device = device or detect_device()
+        self.device = detect_device()
+        self.engine_name = ENGINE_NAME
+        self._tts_loader = tts_loader
+        self._stt_loader = stt_loader
+        self._tts_model: Any | None = None
+        self._stt_model: Any | None = None
+        self._model_lock = threading.Lock()
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            try:
-                self.f5 = F5TTS(device=self.device)
-            except (RuntimeError, ValueError, OSError):
-                self.device = "cpu"
-                self.f5 = F5TTS(device="cpu")
+    @property
+    def model_loaded(self) -> bool:
+        return self._tts_model is not None
 
-        self.default_nfe_step = recommended_nfe_step(self.device)
+    def _ensure_tts_model(self):
+        if self._tts_model is None:
+            with self._model_lock:
+                if self._tts_model is None:
+                    self._tts_model = self._tts_loader(self.model_id)
+                    self.sample_rate = int(
+                        getattr(self._tts_model, "sample_rate", self.sample_rate)
+                    )
+        return self._tts_model
+
+    def _ensure_stt_model(self):
+        if self._stt_model is None:
+            with self._model_lock:
+                if self._stt_model is None:
+                    self._stt_model = self._stt_loader(ASR_MODEL_ID)
+        return self._stt_model
 
     def clone_voice(
         self,
@@ -122,16 +128,15 @@ class LocalVoiceCloner:
         text: str,
         reference_text: str = "",
         speed: float = 1.0,
-        nfe_step: int | None = None,
-        cfg_strength: float = 2.0,
-        sway_sampling_coef: float = -1.0,
+        language: str = "auto",
+        progress_callback: ProgressCallback | None = None,
+        **_legacy_options,
     ) -> SynthesisResult:
         if not text.strip():
             raise ValueError("Input text cannot be empty.")
 
-        if nfe_step is None:
-            nfe_step = self.default_nfe_step
-
+        notify = progress_callback or (lambda _stage: None)
+        notify("prepare")
         tensor_audio, ref_sr = load_audio(
             reference_audio_path,
             target_sr=self.sample_rate,
@@ -141,58 +146,84 @@ class LocalVoiceCloner:
         if len(audio_np) == 0:
             raise ValueError("Reference audio is empty.")
 
-        safe_seed = random.randint(0, 2147483647)
-
-        # Hand F5-TTS a canonical, already-resampled-and-trimmed reference
-        # file instead of the raw upload, so our own preprocessing is the
-        # one source of truth for what the model actually conditions on.
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             canonical_ref_path = Path(tmp.name)
+
         try:
             sf.write(str(canonical_ref_path), audio_np, ref_sr, subtype="PCM_16")
-            with _torchaudio_soundfile_shim(), warnings.catch_warnings():
-                warnings.simplefilter("ignore", DeprecationWarning)
-                wav, sr_out, _ = self.f5.infer(
-                    ref_file=str(canonical_ref_path),
-                    ref_text=reference_text.strip(),
-                    gen_text=prepare_gen_text(text),
-                    nfe_step=nfe_step,
-                    cfg_strength=cfg_strength,
-                    sway_sampling_coef=sway_sampling_coef,
-                    speed=speed,
-                    remove_silence=False,
-                    seed=safe_seed,
+            notify("load")
+            tts_model = self._ensure_tts_model()
+
+            transcript = reference_text.strip()
+            if not transcript:
+                stt_result = self._ensure_stt_model().generate(
+                    str(canonical_ref_path),
+                    verbose=False,
                 )
+                transcript = str(getattr(stt_result, "text", "")).strip()
+                if not transcript:
+                    raise RuntimeError("The reference recording could not be transcribed.")
+
+            notify("voice")
+            sample_rate = self.sample_rate
+            pieces: list[np.ndarray] = []
+            for segment, newline_count in _script_segments(text):
+                generations = list(
+                    tts_model.generate(
+                        text=segment,
+                        ref_audio=str(canonical_ref_path),
+                        ref_text=transcript,
+                        speed=speed,
+                        lang_code=language,
+                        stream=False,
+                        verbose=False,
+                    )
+                )
+                if not generations:
+                    raise RuntimeError("The voice model returned no audio.")
+
+                sample_rate = int(getattr(generations[0], "sample_rate", sample_rate))
+                if pieces and newline_count:
+                    pieces.append(
+                        np.zeros(
+                            round(sample_rate * LINE_BREAK_PAUSE_SECONDS * newline_count),
+                            dtype=np.float32,
+                        )
+                    )
+                for index, item in enumerate(generations):
+                    if index:
+                        pieces.append(np.zeros(round(sample_rate * 0.08), dtype=np.float32))
+                    pieces.append(np.asarray(item.audio).squeeze().astype(np.float32))
+            generated = np.concatenate(pieces)
+
+            notify("finish")
+            enhanced = enhance_audio(generated, sample_rate, target_level_db=-16.0)
         finally:
             canonical_ref_path.unlink(missing_ok=True)
 
-        enhanced = enhance_audio(np.asarray(wav), sr_out, target_level_db=-16.0)
-
+        quality_label = "high fidelity" if self.quality == "high" else "fast"
         return SynthesisResult(
             audio=enhanced,
-            sample_rate=sr_out,
-            duration_seconds=float(len(enhanced) / sr_out),
-            matched_voice="F5-TTS Direct Acoustic Conditioning",
+            sample_rate=sample_rate,
+            duration_seconds=float(len(enhanced) / sample_rate),
+            matched_voice=f"{ENGINE_NAME} · {quality_label}",
         )
 
 
-_shared_cloner: LocalVoiceCloner | None = None
+_shared_cloners: dict[str, LocalVoiceCloner] = {}
 _shared_cloner_lock = threading.Lock()
 
 
-def get_shared_cloner() -> LocalVoiceCloner:
-    """Return a process-wide LocalVoiceCloner, constructing it on first use.
-    The model is multiple gigabytes and slow to load, so callers (the web
-    app, the API) share one instance instead of loading it per request."""
-    global _shared_cloner
-    if _shared_cloner is None:
+def get_shared_cloner(quality: str = "high") -> LocalVoiceCloner:
+    if quality not in _shared_cloners:
         with _shared_cloner_lock:
-            if _shared_cloner is None:
-                _shared_cloner = LocalVoiceCloner()
-    return _shared_cloner
+            if quality not in _shared_cloners:
+                _shared_cloners[quality] = LocalVoiceCloner(quality=quality)
+    return _shared_cloners[quality]
 
 
-def is_shared_cloner_loaded() -> bool:
-    """Report whether get_shared_cloner() has already constructed the model,
-    without triggering a load. Useful for status displays."""
-    return _shared_cloner is not None
+def is_shared_cloner_loaded(quality: str | None = None) -> bool:
+    if quality is not None:
+        cloner = _shared_cloners.get(quality)
+        return bool(cloner and cloner.model_loaded)
+    return any(cloner.model_loaded for cloner in _shared_cloners.values())

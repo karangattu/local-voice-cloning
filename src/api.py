@@ -20,10 +20,13 @@ from fastapi.responses import Response
 
 from src.audio_utils import SUPPORTED_OUTPUT_FORMATS, save_audio
 from src.cloner import (
+    ENGINE_NAME,
+    MODEL_VARIANTS,
+    SUPPORTED_LANGUAGES,
     detect_device,
     get_shared_cloner,
     is_shared_cloner_loaded,
-    recommended_nfe_step,
+    model_id_for_quality,
 )
 
 MEDIA_TYPES = {"wav": "audio/wav", "mp3": "audio/mpeg"}
@@ -31,9 +34,9 @@ MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
 app = FastAPI(
     title="Local Voice Cloning API",
-    description="Zero-shot voice cloning with F5-TTS. Upload a reference voice "
+    description="Zero-shot voice cloning with Qwen3-TTS on Apple MLX. Upload a reference voice "
     "sample and text; receive synthesized speech as WAV or MP3.",
-    version="1.0.0",
+    version="2.0.0",
 )
 
 
@@ -47,21 +50,14 @@ def health():
 
 @app.get("/info")
 def info():
-    """Report engine defaults without forcing a model load. Once the model
-    has loaded (after a first /synthesize call), report its actual device
-    in case it fell back from the projected device (see LocalVoiceCloner)."""
-    if is_shared_cloner_loaded():
-        cloner = get_shared_cloner()
-        device, default_steps = cloner.device, cloner.default_nfe_step
-    else:
-        device = detect_device()
-        default_steps = recommended_nfe_step(device)
-
+    """Report engine defaults without forcing either model checkpoint to load."""
     return {
-        "engine": "F5-TTS",
-        "device": device,
+        "engine": ENGINE_NAME,
+        "device": detect_device(),
         "sample_rate": 24000,
-        "default_quality_steps": default_steps,
+        "default_quality": "high",
+        "quality_models": dict(sorted(MODEL_VARIANTS.items())),
+        "supported_languages": list(SUPPORTED_LANGUAGES),
         "model_loaded": is_shared_cloner_loaded(),
         "supported_output_formats": sorted(SUPPORTED_OUTPUT_FORMATS),
     }
@@ -78,11 +74,25 @@ async def synthesize(
             "(auto-detected if empty; a longer transcript truncates the output)"
         ),
     ] = "",
-    speed: Annotated[float, Form(ge=0.3, le=2.0, description="Speech speed factor")] = 1.0,
-    steps: Annotated[int | None, Form(ge=8, le=128, description="Diffusion steps (default: hardware maximum)")] = None,
+    speed: Annotated[
+        float,
+        Form(ge=0.3, le=2.0, description="Compatibility option; accepted by the MLX backend"),
+    ] = 1.0,
+    quality: Annotated[
+        str,
+        Form(description="Model quality: high (BF16) or fast (8-bit)"),
+    ] = "high",
+    language: Annotated[
+        str,
+        Form(description="Output language or auto"),
+    ] = "auto",
+    steps: Annotated[
+        int | None,
+        Form(ge=8, le=128, description="Deprecated F5-TTS option; accepted but ignored"),
+    ] = None,
     cfg_strength: Annotated[
         float,
-        Form(ge=1.0, le=4.0, description="Voice adherence strength. Lower values sound more natural but less exact."),
+        Form(ge=1.0, le=4.0, description="Deprecated F5-TTS option; accepted but ignored"),
     ] = 2.0,
     output_format: Annotated[str, Form(description="Output audio format: wav or mp3")] = "wav",
 ):
@@ -92,6 +102,16 @@ async def synthesize(
             status_code=422,
             detail=f"Unsupported output format '{output_format}'. "
             f"Supported: {', '.join(sorted(SUPPORTED_OUTPUT_FORMATS))}",
+        )
+    quality = quality.lower().strip()
+    try:
+        model_id_for_quality(quality)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if language not in SUPPORTED_LANGUAGES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unsupported language '{language}'.",
         )
     if not text.strip():
         raise HTTPException(status_code=422, detail="Field 'text' cannot be empty.")
@@ -109,11 +129,12 @@ async def synthesize(
         ref_path.write_bytes(ref_bytes)
 
         try:
-            result = get_shared_cloner().clone_voice(
+            result = get_shared_cloner(quality).clone_voice(
                 reference_audio_path=ref_path,
                 text=text,
                 reference_text=ref_text,
                 speed=speed,
+                language=language,
                 nfe_step=steps,
                 cfg_strength=cfg_strength,
             )

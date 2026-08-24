@@ -27,7 +27,11 @@ def test_synthesize_wav(reference_wav):
         response = client.post(
             "/synthesize",
             files={"reference_audio": ("ref.wav", f, "audio/wav")},
-            data={"text": "Hello from the API test", "steps": "8", "output_format": "wav"},
+            data={
+                "text": "Hello from the API test",
+                "ref_text": "A steady synthetic tone.",
+                "output_format": "wav",
+            },
         )
     assert response.status_code == 200
     assert response.headers["content-type"] == "audio/wav"
@@ -40,7 +44,11 @@ def test_synthesize_mp3(reference_wav):
         response = client.post(
             "/synthesize",
             files={"reference_audio": ("ref.wav", f, "audio/wav")},
-            data={"text": "Hello again", "steps": "8", "output_format": "mp3"},
+            data={
+                "text": "Hello again",
+                "ref_text": "A steady synthetic tone.",
+                "output_format": "mp3",
+            },
         )
     assert response.status_code == 200
     assert response.headers["content-type"] == "audio/mpeg"

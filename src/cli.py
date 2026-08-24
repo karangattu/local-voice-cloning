@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 from src.audio_utils import save_audio
-from src.cloner import LocalVoiceCloner
+from src.cloner import SUPPORTED_LANGUAGES, LocalVoiceCloner
 
 
 def parse_args(args=None):
@@ -49,19 +49,31 @@ def parse_args(args=None):
         "--speed",
         type=float,
         default=1.0,
-        help="Speech speed factor (default: 1.0).",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--quality",
+        choices=["high", "fast"],
+        default="high",
+        help="Qwen model quality: high uses BF16; fast uses an 8-bit checkpoint.",
+    )
+    parser.add_argument(
+        "--language",
+        choices=SUPPORTED_LANGUAGES,
+        default="auto",
+        help="Output language (default: auto).",
     )
     parser.add_argument(
         "--cfg-strength",
         type=float,
         default=2.0,
-        help="Voice adherence strength (default: 2.0). Lower values sound more natural but less exact.",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--steps",
         type=int,
         default=None,
-        help="Diffusion quality steps (default: hardware maximum — 64 on GPU/Apple Silicon, 32 on CPU).",
+        help=argparse.SUPPRESS,
     )
     return parser.parse_args(args)
 
@@ -74,13 +86,14 @@ def main():
         sys.exit(1)
 
     print(f"Loading reference voice from {ref_path}...")
-    cloner = LocalVoiceCloner()
-    print("Synthesizing text conditioned directly on the uploaded reference voice...")
+    cloner = LocalVoiceCloner(quality=args.quality)
+    print(f"Synthesizing with Qwen3-TTS 1.7B ({args.quality}) on Apple MLX...")
     result = cloner.clone_voice(
         reference_audio_path=ref_path,
         text=args.text,
         reference_text=args.ref_text,
         speed=args.speed,
+        language=args.language,
         nfe_step=args.steps,
         cfg_strength=args.cfg_strength,
     )
