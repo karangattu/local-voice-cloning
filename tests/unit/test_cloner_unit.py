@@ -173,3 +173,23 @@ def test_clone_voice_inserts_an_audible_pause_at_each_newline(
     pause_samples = round(result.sample_rate * 0.4)
     assert len(result.audio) == (line_samples * 2) + pause_samples
     assert np.all(result.audio[line_samples : line_samples + pause_samples] == 0)
+
+
+def test_cloner_module_import_does_not_require_mlx(monkeypatch):
+    import builtins
+    import importlib
+    import sys
+
+    original_import = builtins.__import__
+
+    def block_mlx_import(name, *args, **kwargs):
+        if name == "mlx_audio" or name.startswith("mlx_audio."):
+            raise ModuleNotFoundError("MLX is not available on this platform")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", block_mlx_import)
+    sys.modules.pop("src.cloner", None)
+
+    imported = importlib.import_module("src.cloner")
+
+    assert imported.ENGINE_NAME == "Qwen3-TTS 1.7B"

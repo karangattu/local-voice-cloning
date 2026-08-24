@@ -7,8 +7,6 @@ from typing import Any
 
 import numpy as np
 import soundfile as sf
-from mlx_audio.stt.utils import load_model as load_stt_model
-from mlx_audio.tts.utils import load_model as load_tts_model
 
 from src.audio_utils import enhance_audio, load_audio
 
@@ -34,6 +32,18 @@ SUPPORTED_LANGUAGES = (
     "Spanish",
 )
 ProgressCallback = Callable[[str], None]
+
+
+def _load_tts_model(model_id: str):
+    from mlx_audio.tts.utils import load_model
+
+    return load_model(model_id)
+
+
+def _load_stt_model(model_id: str):
+    from mlx_audio.stt.utils import load_model
+
+    return load_model(model_id)
 
 
 @dataclass
@@ -87,16 +97,16 @@ class LocalVoiceCloner:
         self,
         quality: str = "high",
         sample_rate: int = 24000,
-        tts_loader: Callable[[str], Any] = load_tts_model,
-        stt_loader: Callable[[str], Any] = load_stt_model,
+        tts_loader: Callable[[str], Any] | None = None,
+        stt_loader: Callable[[str], Any] | None = None,
     ) -> None:
         self.quality = quality
         self.model_id = model_id_for_quality(quality)
         self.sample_rate = sample_rate
         self.device = detect_device()
         self.engine_name = ENGINE_NAME
-        self._tts_loader = tts_loader
-        self._stt_loader = stt_loader
+        self._tts_loader = tts_loader or _load_tts_model
+        self._stt_loader = stt_loader or _load_stt_model
         self._tts_model: Any | None = None
         self._stt_model: Any | None = None
         self._model_lock = threading.Lock()
