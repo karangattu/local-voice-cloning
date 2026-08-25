@@ -50,6 +50,7 @@ def test_recording_ui_stops_after_maximum_duration():
     assert f'data-max-duration="{MAX_RECORDING_SECONDS}"' in rendered
     assert "maxDurationTimerId = setTimeout" in rendered
     assert "Maximum recording length reached. Processing..." in rendered
+    assert "setStatus('Saved as ' + name + '.wav')" not in rendered
 
 
 def test_voice_samples_dir_is_a_path_and_exists():

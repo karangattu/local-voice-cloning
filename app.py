@@ -542,7 +542,7 @@ app_ui = ui.page_fluid(
                                         if (typeof Shiny !== 'undefined') {
                                             Shiny.setInputValue('recorded_audio_data', { data: reader.result, name: name });
                                         }
-                                        setStatus('Saved as ' + name + '.wav');
+                                        setStatus('Processing...');
                                     };
                                     reader.readAsDataURL(wavBlob);
                                 }).catch(function(err) {
