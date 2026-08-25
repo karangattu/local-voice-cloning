@@ -803,6 +803,23 @@ def _sanitize_voice_name(name: str) -> str:
     return name.strip("-")
 
 
+def _saved_voice_path(selected: str) -> Path | None:
+    if not isinstance(selected, str):
+        return None
+    saved_names = {
+        path.stem for path in VOICE_SAMPLES_DIR.glob("*.wav") if path.is_file()
+    }
+    if selected not in saved_names:
+        return None
+
+    path = VOICE_SAMPLES_DIR / f"{selected}.wav"
+    try:
+        path.resolve().relative_to(VOICE_SAMPLES_DIR.resolve())
+    except ValueError:
+        return None
+    return path
+
+
 def server(input, output, session):
     session_dir = Path(tempfile.gettempdir()) / "local-voice-cloning" / session.id
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -844,9 +861,9 @@ def server(input, output, session):
         elif mode == "library":
             selected = input.voice_library() or ""
             if selected:
-                    path = VOICE_SAMPLES_DIR / f"{selected}.wav"
-                    if path.exists():
-                        return (str(path), f"{selected}.wav")
+                path = _saved_voice_path(selected)
+                if path:
+                    return (str(path), f"{selected}.wav")
         return None
 
     @reactive.calc
@@ -936,8 +953,8 @@ def server(input, output, session):
         selected = input.voice_library() or ""
         if not selected:
             return
-        path = VOICE_SAMPLES_DIR / f"{selected}.wav"
-        if path.exists():
+        path = _saved_voice_path(selected)
+        if path:
             path.unlink()
             library_refresh.set(library_refresh() + 1)
             ui.notification_show(f"Deleted voice profile '{selected}'.", type="message")

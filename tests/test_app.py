@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import app as app_module
 from app import RECORDING_PROMPT, VOICE_SAMPLES_DIR, app, app_ui, server
 
 
@@ -46,3 +47,12 @@ def test_voice_samples_dir_is_a_path_and_exists():
     assert isinstance(VOICE_SAMPLES_DIR, Path)
     assert VOICE_SAMPLES_DIR.exists()
     assert VOICE_SAMPLES_DIR.is_dir()
+
+
+def test_saved_voice_path_only_allows_existing_voice_samples(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "VOICE_SAMPLES_DIR", tmp_path)
+    (tmp_path / "saved.wav").write_bytes(b"wav")
+
+    assert app_module._saved_voice_path("saved") == tmp_path / "saved.wav"
+    assert app_module._saved_voice_path("missing") is None
+    assert app_module._saved_voice_path("../outside") is None
