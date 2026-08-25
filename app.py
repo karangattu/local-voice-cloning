@@ -1,5 +1,6 @@
 import base64
 import mimetypes
+import re
 import shutil
 import tempfile
 import time
@@ -10,9 +11,21 @@ import shinyswatch
 from faicons import icon_svg
 from shiny import App, reactive, render, ui
 
-from src.audio_utils import analyze_reference_audio, save_audio
+from src.audio_utils import (
+    analyze_reference_audio,
+    apply_fades,
+    load_audio,
+    save_audio,
+    trim_silence,
+)
 from src.cloner import ENGINE_NAME, get_shared_cloner
 from src.progress import progress_snapshot, run_with_progress
+
+VOICE_SAMPLES_DIR = Path(__file__).parent / "voice_samples"
+VOICE_SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
+
+RECORDING_PROMPT = """Hi, I'm [your name], and this is my natural speaking voice. The quick brown fox jumps over the lazy dog. How vexingly quick daft zebras jump! Did it capture the real me?"""
+MAX_RECORDING_SECONDS = 30
 
 app_ui = ui.page_fluid(
     ui.tags.head(
@@ -300,6 +313,94 @@ app_ui = ui.page_fluid(
             .btn-download:hover { border-color: var(--mint) !important; color: var(--mint-soft) !important; }
             .btn-download svg { width: 13px; height: 13px; fill: currentColor; margin-right: 7px; vertical-align: -2px; }
 
+            /* Reference mode selector */
+            .ref-mode-selector { margin-bottom: 16px; }
+            .ref-mode-selector .shiny-options-group { display: flex; gap: 0; }
+            .ref-mode-selector .form-check {
+                flex: 1; margin: 0; padding: 0;
+                border: 1px solid var(--border);
+                background: var(--surface);
+            }
+            .ref-mode-selector .form-check:first-child { border-radius: 7px 0 0 7px; }
+            .ref-mode-selector .form-check:last-child { border-radius: 0 7px 7px 0; border-left: 0; }
+            .ref-mode-selector .form-check:not(:first-child):not(:last-child) { border-left: 0; }
+            .ref-mode-selector .form-check-label {
+                width: 100%; text-align: center; padding: 9px 6px;
+                font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; margin: 0;
+            }
+            .ref-mode-selector .form-check-input:checked + label {
+                color: var(--bg); background: var(--mint); border-color: var(--mint);
+            }
+            .ref-mode-selector .form-check-input { display: none; }
+
+            /* Record panel */
+            .record-panel { margin-top: 14px; }
+            .voice-name-field { margin-bottom: 16px; }
+            .voice-name-field .control-label { color: var(--muted); font-size: 12px; font-weight: 560; margin-bottom: 7px; }
+
+            .record-prompt {
+                margin-bottom: 18px;
+                padding: 16px 18px;
+                border: 1px solid var(--border);
+                border-radius: 8px;
+                background: #14131c;
+                color: #d8d3dd;
+                font-size: 14px;
+                line-height: 1.7;
+                white-space: pre-wrap;
+                max-height: 220px;
+                overflow-y: auto;
+            }
+            .record-prompt-caption { color: var(--subtle); font-size: 12px; margin-bottom: 7px; }
+
+            .record-controls { display: flex; align-items: center; gap: 14px; }
+            .btn-record {
+                display: inline-flex; align-items: center; gap: 9px;
+                min-height: 46px; padding: 0 22px;
+                border: 1px solid var(--mint) !important;
+                border-radius: 8px !important;
+                background: var(--surface-soft) !important;
+                color: var(--mint) !important;
+                font-size: 14px !important; font-weight: 700 !important;
+                cursor: pointer;
+            }
+            .btn-record:hover { background: rgba(114,216,170,.12) !important; }
+            .btn-record.recording {
+                border-color: var(--danger) !important;
+                color: var(--danger) !important;
+                background: rgba(239,125,121,.1) !important;
+            }
+            .btn-record.recording::before {
+                content: ""; display: inline-block; width: 10px; height: 10px;
+                border-radius: 50%; background: var(--danger);
+                animation: rec-pulse 1.1s ease-in-out infinite;
+            }
+            .btn-record:not(.recording)::before {
+                content: ""; display: inline-block; width: 10px; height: 10px;
+                border-radius: 50%; background: var(--mint);
+            }
+            @keyframes rec-pulse { 50% { opacity: .35; } }
+            .record-timer {
+                font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                font-variant-numeric: tabular-nums;
+                font-size: 18px; color: var(--text);
+            }
+            .record-status { color: var(--subtle); font-size: 12px; margin-top: 8px; }
+
+            /* Library panel */
+            .library-panel { margin-top: 14px; }
+            .library-controls { display: flex; gap: 9px; align-items: end; }
+            .library-controls .form-group { flex: 1; margin: 0; }
+            .library-controls .control-label { color: var(--muted); font-size: 12px; font-weight: 560; margin-bottom: 7px; }
+            .btn-refresh-voices, .btn-delete-voice {
+                min-height: 38px; font-size: 12px !important; white-space: nowrap;
+            }
+            .btn-refresh-voices { border: 1px solid var(--border-strong) !important; color: var(--text) !important; background: var(--surface) !important; }
+            .btn-refresh-voices:hover { border-color: var(--mint) !important; color: var(--mint-soft) !important; }
+            .btn-delete-voice { border: 1px solid rgba(239,125,121,.35) !important; color: var(--danger) !important; background: var(--surface) !important; }
+            .btn-delete-voice:hover { background: rgba(239,125,121,.1) !important; }
+            .library-empty { color: var(--subtle); font-size: 13px; margin-top: 12px; }
+
             @media (max-width: 940px) {
                 .app-header { grid-template-columns: 1fr auto; }
                 .privacy-note { display: none; }
@@ -322,6 +423,173 @@ app_ui = ui.page_fluid(
                 .stage-detail { display: none; }
                 .stage-label { font-size: 10px; }
             }
+            """
+        ),
+        ui.tags.script(
+            """
+            (function() {
+                let mediaRecorder = null;
+                let audioChunks = [];
+                let audioContext = null;
+                let mediaStream = null;
+                let isRecording = false;
+                let timerId = null;
+                let maxDurationTimerId = null;
+                let startTime = 0;
+
+                function setButtonState(recording) {
+                    const btn = document.getElementById('btn-record');
+                    if (!btn) return;
+                    if (recording) {
+                        btn.textContent = ' Stop recording';
+                        btn.classList.add('recording');
+                    } else {
+                        btn.textContent = ' Start recording';
+                        btn.classList.remove('recording');
+                    }
+                }
+
+                function setTimer(seconds) {
+                    const el = document.getElementById('record-timer');
+                    if (el) el.textContent = Math.floor(seconds / 60) + ':' + String(Math.floor(seconds % 60)).padStart(2, '0');
+                }
+
+                function setStatus(msg) {
+                    const el = document.getElementById('record-status');
+                    if (el) el.textContent = msg;
+                }
+
+                function sanitizeName(name) {
+                    return name.trim().toLowerCase()
+                        .replace(/\\s+/g, '-')
+                        .replace(/[^a-z0-9_-]/g, '')
+                        .replace(/^-+|-+$/g, '');
+                }
+
+                function encodeWav(audioBuffer) {
+                    const numChannels = 1;
+                    const sampleRate = audioBuffer.sampleRate;
+                    const source = audioBuffer.getChannelData(0);
+                    // down-mix to mono if needed
+                    let samples = source;
+                    if (audioBuffer.numberOfChannels > 1) {
+                        samples = new Float32Array(source.length);
+                        for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
+                            const data = audioBuffer.getChannelData(ch);
+                            for (let i = 0; i < data.length; i++) samples[i] += data[i] / audioBuffer.numberOfChannels;
+                        }
+                    }
+                    const bytesPerSample = 2;
+                    const blockAlign = numChannels * bytesPerSample;
+                    const dataSize = samples.length * bytesPerSample;
+                    const buffer = new ArrayBuffer(44 + dataSize);
+                    const view = new DataView(buffer);
+                    function writeStr(off, str) { for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i)); }
+                    writeStr(0, 'RIFF');
+                    view.setUint32(4, 36 + dataSize, true);
+                    writeStr(8, 'WAVE');
+                    writeStr(12, 'fmt ');
+                    view.setUint32(16, 16, true);
+                    view.setUint16(20, 1, true);
+                    view.setUint16(22, numChannels, true);
+                    view.setUint32(24, sampleRate, true);
+                    view.setUint32(28, sampleRate * blockAlign, true);
+                    view.setUint16(32, blockAlign, true);
+                    view.setUint16(34, 16, true);
+                    writeStr(36, 'data');
+                    view.setUint32(40, dataSize, true);
+                    let offset = 44;
+                    for (let i = 0; i < samples.length; i++, offset += 2) {
+                        const s = Math.max(-1, Math.min(1, samples[i]));
+                        view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+                    }
+                    return new Blob([buffer], { type: 'audio/wav' });
+                }
+
+                window.sonaToggleRecording = function() {
+                    if (isRecording) {
+                        sonaStopRecording();
+                    } else {
+                        sonaStartRecording();
+                    }
+                };
+
+                function sonaStartRecording() {
+                    const nameInput = document.getElementById('voice_name');
+                    if (!nameInput || !nameInput.value.trim()) {
+                        setStatus('Enter a voice name before recording.');
+                        if (typeof Shiny !== 'undefined' && Shiny.notifications) {
+                            Shiny.notifications.show({ html: 'Enter a voice name before recording.', type: 'warning' });
+                        }
+                        return;
+                    }
+                    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                        setStatus('Recording is not supported in this browser.');
+                        return;
+                    }
+                    navigator.mediaDevices.getUserMedia({ audio: true })
+                        .then(function(stream) {
+                            mediaStream = stream;
+                            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                            mediaRecorder = new MediaRecorder(stream);
+                            audioChunks = [];
+                            mediaRecorder.ondataavailable = function(e) {
+                                if (e.data.size > 0) audioChunks.push(e.data);
+                            };
+                            mediaRecorder.onstop = function() {
+                                var blob = new Blob(audioChunks, { type: 'audio/webm' });
+                                blob.arrayBuffer().then(function(buf) {
+                                    return audioContext.decodeAudioData(buf);
+                                }).then(function(audioBuffer) {
+                                    var wavBlob = encodeWav(audioBuffer);
+                                    var reader = new FileReader();
+                                    reader.onloadend = function() {
+                                        var name = sanitizeName(document.getElementById('voice_name').value);
+                                        if (typeof Shiny !== 'undefined') {
+                                            Shiny.setInputValue('recorded_audio_data', { data: reader.result, name: name });
+                                        }
+                                        setStatus('Processing...');
+                                    };
+                                    reader.readAsDataURL(wavBlob);
+                                }).catch(function(err) {
+                                    setStatus('Could not process recording: ' + err.message);
+                                }).finally(function() {
+                                    if (mediaStream) mediaStream.getTracks().forEach(function(t) { t.stop(); });
+                                    if (audioContext) { audioContext.close(); audioContext = null; }
+                                });
+                            };
+                            mediaRecorder.start();
+                            isRecording = true;
+                            startTime = Date.now();
+                            setButtonState(true);
+                            setStatus('Recording...');
+                            timerId = setInterval(function() {
+                                setTimer((Date.now() - startTime) / 1000);
+                            }, 200);
+                            const maxDuration = Number(document.getElementById('btn-record').dataset.maxDuration) || 30;
+                            maxDurationTimerId = setTimeout(function() {
+                                setTimer(maxDuration);
+                                sonaStopRecording('Maximum recording length reached. Processing...');
+                            }, maxDuration * 1000);
+                        })
+                        .catch(function(err) {
+                            setStatus('Microphone access denied: ' + err.message);
+                            setButtonState(false);
+                        });
+                }
+
+                function sonaStopRecording(statusMessage) {
+                    if (!isRecording) return;
+                    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                        mediaRecorder.stop();
+                    }
+                    isRecording = false;
+                    setButtonState(false);
+                    if (timerId) { clearInterval(timerId); timerId = null; }
+                    if (maxDurationTimerId) { clearTimeout(maxDurationTimerId); maxDurationTimerId = null; }
+                    setStatus(statusMessage || 'Processing...');
+                }
+            })();
             """
         ),
     ),
@@ -358,7 +626,7 @@ app_ui = ui.page_fluid(
                     ui.input_text_area(
                         "speech_text",
                         None,
-                        value="Hello! This audio was generated using your voice profile, entirely on this Mac.",
+                        value="Hello! If you're hearing this, it means the voice clone worked. Every word you're hearing was spoken by a computer, in my voice, running entirely on this Mac. Pretty wild, right?",
                         placeholder="Write the words you want the cloned voice to speak…",
                         rows=9,
                         width="100%",
@@ -428,16 +696,73 @@ app_ui = ui.page_fluid(
                         "Voice reference",
                     ),
                     ui.p(
-                        "Upload 5–30 seconds of clean speech. The first 12 seconds create the voice profile.",
+                        "Record yourself, upload a file, or pick a saved voice. "
+                        "The first 12 seconds create the voice profile.",
                         class_="section-copy",
                     ),
                     ui.div(
-                        {"class": "reference-upload"},
-                        ui.input_file(
-                            "audio_file",
-                            "Choose a WAV, MP3, OGG, FLAC, or M4A file",
-                            accept=[".wav", ".mp3", ".ogg", ".flac", ".m4a"],
-                            multiple=False,
+                        {"class": "ref-mode-selector"},
+                        ui.input_radio_buttons(
+                            "ref_mode",
+                            None,
+                            choices={
+                                "record": "Record",
+                                "upload": "Upload",
+                                "library": "Saved voices",
+                            },
+                            selected="record",
+                            inline=True,
+                        ),
+                    ),
+                    ui.panel_conditional(
+                        "input.ref_mode === 'record'",
+                        ui.div(
+                            {"class": "record-panel"},
+                            ui.div(
+                                {"class": "voice-name-field"},
+                                ui.input_text(
+                                    "voice_name",
+                                    "Voice name",
+                                    placeholder="e.g. my-voice",
+                                    width="100%",
+                                ),
+                            ),
+                            ui.div(
+                                {"class": "record-prompt-caption"},
+                                "Read this aloud at a natural pace:",
+                            ),
+                            ui.tags.pre(
+                                {"class": "record-prompt"},
+                                RECORDING_PROMPT,
+                            ),
+                            ui.div(
+                                {"class": "record-controls"},
+                                ui.tags.button(
+                                    {"id": "btn-record", "type": "button", "class": "btn-record", "data-max-duration": str(MAX_RECORDING_SECONDS), "onclick": "sonaToggleRecording()"},
+                                    " Start recording",
+                                ),
+                                ui.tags.span({"id": "record-timer", "class": "record-timer"}, "0:00"),
+                            ),
+                            ui.tags.div({"id": "record-status", "class": "record-status"}, "Ready"),
+                        ),
+                    ),
+                    ui.panel_conditional(
+                        "input.ref_mode === 'upload'",
+                        ui.div(
+                            {"class": "reference-upload"},
+                            ui.input_file(
+                                "audio_file",
+                                "Choose a WAV, MP3, OGG, FLAC, or M4A file",
+                                accept=[".wav", ".mp3", ".ogg", ".flac", ".m4a"],
+                                multiple=False,
+                            ),
+                        ),
+                    ),
+                    ui.panel_conditional(
+                        "input.ref_mode === 'library'",
+                        ui.div(
+                            {"class": "library-panel"},
+                            ui.output_ui("library_selector"),
                         ),
                     ),
                     ui.output_ui("reference_preview"),
@@ -486,6 +811,30 @@ def _guess_mime_type(filename: str) -> str:
     return mime_type or "audio/wav"
 
 
+def _sanitize_voice_name(name: str) -> str:
+    name = name.strip().lower()
+    name = re.sub(r"\s+", "-", name)
+    name = re.sub(r"[^a-z0-9_-]", "", name)
+    return name.strip("-")
+
+
+def _saved_voice_path(selected: str) -> Path | None:
+    if not isinstance(selected, str):
+        return None
+    saved_names = {
+        path.stem for path in VOICE_SAMPLES_DIR.glob("*.wav") if path.is_file()
+    }
+    if selected not in saved_names:
+        return None
+
+    path = VOICE_SAMPLES_DIR / f"{selected}.wav"
+    try:
+        path.resolve().relative_to(VOICE_SAMPLES_DIR.resolve())
+    except ValueError:
+        return None
+    return path
+
+
 def server(input, output, session):
     session_dir = Path(tempfile.gettempdir()) / "local-voice-cloning" / session.id
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -494,6 +843,9 @@ def server(input, output, session):
     output_audio_path = reactive.value(None)
     generation_stage = reactive.value(None)
     generation_started_at = reactive.value(None)
+    last_recorded_path = reactive.value(None)
+    last_recorded_name = reactive.value(None)
+    library_refresh = reactive.value(0)
 
     @render.ui
     def engine_badge():
@@ -509,20 +861,132 @@ def server(input, output, session):
     def character_count():
         return f"{len(input.speech_text() or ''):,} / 5,000"
 
+    @reactive.calc
+    def active_reference():
+        mode = input.ref_mode() if input.ref_mode() else "record"
+        if mode == "upload":
+            file_infos = input.audio_file()
+            if file_infos:
+                return (file_infos[0]["datapath"], file_infos[0]["name"])
+        elif mode == "record":
+            path = last_recorded_path()
+            if path:
+                name = last_recorded_name() or "recording"
+                return (str(path), f"{name}.wav")
+        elif mode == "library":
+            selected = input.voice_library() or ""
+            if selected:
+                path = _saved_voice_path(selected)
+                if path:
+                    return (str(path), f"{selected}.wav")
+        return None
+
+    @reactive.calc
+    def library_choices():
+        library_refresh()
+        return sorted(p.stem for p in VOICE_SAMPLES_DIR.glob("*.wav"))
+
+    @render.ui
+    def library_selector():
+        voices = library_choices()
+        if not voices:
+            return ui.div(
+                {"class": "library-empty"},
+                "No saved voices yet. Record one in the Record tab.",
+            )
+        return ui.div(
+            {"class": "library-controls"},
+            ui.input_select(
+                "voice_library",
+                "Saved voices",
+                choices={v: v for v in voices},
+                selected=voices[0],
+            ),
+            ui.input_action_button(
+                "btn_refresh_voices",
+                icon_svg("rotate-right"),
+                class_="btn btn-outline-secondary btn-sm btn-refresh-voices",
+                title="Rescan directory",
+            ),
+            ui.input_action_button(
+                "btn_delete_voice",
+                icon_svg("trash"),
+                class_="btn btn-outline-danger btn-sm btn-delete-voice",
+                title="Delete selected voice",
+            ),
+        )
+
+    @reactive.effect
+    @reactive.event(input.recorded_audio_data)
+    def _save_recording():
+        payload = input.recorded_audio_data()
+        if not payload:
+            return
+        data_uri = payload["data"]
+        raw_name = payload.get("name", "")
+        name = _sanitize_voice_name(raw_name)
+        if not name:
+            ui.notification_show("Voice name is empty or invalid.", type="warning")
+            return
+        if "," not in data_uri:
+            ui.notification_show("Recording data is malformed.", type="error")
+            return
+        _header, b64_content = data_uri.split(",", 1)
+        wav_bytes = base64.b64decode(b64_content)
+        save_path = VOICE_SAMPLES_DIR / f"{name}.wav"
+
+        # Post-process the raw recording: resample to 24 kHz, strip leading
+        # and trailing silence, apply short fades, then save. Falls back to
+        # writing the raw bytes if any step fails.
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp.write(wav_bytes)
+            tmp_path = Path(tmp.name)
+        try:
+            tensor_audio, sr = load_audio(tmp_path)
+            audio_np = tensor_audio.squeeze(0).numpy()
+            audio_np = trim_silence(audio_np, sr)
+            audio_np = apply_fades(audio_np, sr)
+            save_audio(save_path, audio_np, sample_rate=sr)
+        except (OSError, RuntimeError, ValueError):
+            save_path.write_bytes(wav_bytes)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+        last_recorded_path.set(str(save_path))
+        last_recorded_name.set(name)
+        library_refresh.set(library_refresh() + 1)
+        ui.notification_show(f"Saved voice profile '{name}'.", type="message")
+
+    @reactive.effect
+    @reactive.event(input.btn_refresh_voices)
+    def _refresh_voices():
+        library_refresh.set(library_refresh() + 1)
+
+    @reactive.effect
+    @reactive.event(input.btn_delete_voice)
+    def _delete_voice():
+        selected = input.voice_library() or ""
+        if not selected:
+            return
+        path = _saved_voice_path(selected)
+        if path:
+            path.unlink()
+            library_refresh.set(library_refresh() + 1)
+            ui.notification_show(f"Deleted voice profile '{selected}'.", type="message")
+
     @render.ui
     def reference_preview():
-        file_infos = input.audio_file()
-        if not file_infos:
+        ref = active_reference()
+        if not ref:
             return ui.div(
                 {"class": "reference-empty"},
                 icon_svg("file-audio"),
                 ui.strong("No reference loaded"),
-                ui.span("Choose one clear recording to begin."),
+                ui.span("Record, upload, or select a saved voice to begin."),
             )
 
-        file_info = file_infos[0]
-        datapath = file_info["datapath"]
-        mime_type = _guess_mime_type(file_info["name"])
+        datapath, display_name = ref
+        mime_type = _guess_mime_type(display_name)
         with open(datapath, "rb") as audio_file:
             b64_audio = base64.b64encode(audio_file.read()).decode("utf-8")
 
@@ -550,7 +1014,7 @@ def server(input, output, session):
         used = min(duration, 12.0)
         return ui.div(
             {"class": "reference-file"},
-            ui.div({"class": "file-name"}, file_info["name"]),
+            ui.div({"class": "file-name"}, display_name),
             ui.div(
                 {"class": "file-caption"},
                 f"{duration:.1f}s recording · first {used:.1f}s used",
@@ -562,7 +1026,7 @@ def server(input, output, session):
             ),
             ui.div(
                 {"class": "meta-list"},
-                ui.div({"class": "meta-row"}, ui.span("Format"), ui.span(Path(file_info["name"]).suffix.lstrip(".").upper() or "Audio")),
+                ui.div({"class": "meta-row"}, ui.span("Format"), ui.span(Path(display_name).suffix.lstrip(".").upper() or "Audio")),
                 ui.div({"class": "meta-row"}, ui.span("Sample rate"), ui.span(f"{sample_rate:,} Hz")),
                 ui.div({"class": "meta-row"}, ui.span("Profile window"), ui.span(f"00:00 – 00:{used:04.1f}")),
             ),
@@ -591,9 +1055,9 @@ def server(input, output, session):
     @reactive.effect
     @reactive.event(input.btn_generate)
     def handle_synthesis():
-        file_infos = input.audio_file()
+        ref = active_reference()
         text = input.speech_text()
-        if not file_infos:
+        if not ref:
             ui.notification_show("Add a reference recording before creating audio.", type="warning")
             return
         if not text.strip():
@@ -604,7 +1068,7 @@ def server(input, output, session):
         generation_stage.set("prepare")
         generation_started_at.set(time.monotonic())
         run_synthesis(
-            file_infos[0]["datapath"],
+            ref[0],
             text,
             input.ref_text_override() or "",
             input.quality() or "high",
