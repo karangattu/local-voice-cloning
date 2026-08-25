@@ -19,6 +19,7 @@ VOICE_SAMPLES_DIR = Path(__file__).parent / "voice_samples"
 VOICE_SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
 
 RECORDING_PROMPT = """Hi, I'm [your name], and this is my natural speaking voice. The quick brown fox jumps over the lazy dog. How vexingly quick daft zebras jump! Did it capture the real me?"""
+MAX_RECORDING_SECONDS = 30
 
 app_ui = ui.page_fluid(
     ui.tags.head(
@@ -427,6 +428,7 @@ app_ui = ui.page_fluid(
                 let mediaStream = null;
                 let isRecording = false;
                 let timerId = null;
+                let maxDurationTimerId = null;
                 let startTime = 0;
 
                 function setButtonState(recording) {
@@ -558,6 +560,11 @@ app_ui = ui.page_fluid(
                             timerId = setInterval(function() {
                                 setTimer((Date.now() - startTime) / 1000);
                             }, 200);
+                            const maxDuration = Number(document.getElementById('btn-record').dataset.maxDuration) || 30;
+                            maxDurationTimerId = setTimeout(function() {
+                                setTimer(maxDuration);
+                                sonaStopRecording('Maximum recording length reached. Processing...');
+                            }, maxDuration * 1000);
                         })
                         .catch(function(err) {
                             setStatus('Microphone access denied: ' + err.message);
@@ -565,14 +572,16 @@ app_ui = ui.page_fluid(
                         });
                 }
 
-                function sonaStopRecording() {
+                function sonaStopRecording(statusMessage) {
+                    if (!isRecording) return;
                     if (mediaRecorder && mediaRecorder.state !== 'inactive') {
                         mediaRecorder.stop();
                     }
                     isRecording = false;
                     setButtonState(false);
                     if (timerId) { clearInterval(timerId); timerId = null; }
-                    setStatus('Processing...');
+                    if (maxDurationTimerId) { clearTimeout(maxDurationTimerId); maxDurationTimerId = null; }
+                    setStatus(statusMessage || 'Processing...');
                 }
             })();
             """
@@ -723,7 +732,7 @@ app_ui = ui.page_fluid(
                             ui.div(
                                 {"class": "record-controls"},
                                 ui.tags.button(
-                                    {"id": "btn-record", "type": "button", "class": "btn-record", "onclick": "sonaToggleRecording()"},
+                                    {"id": "btn-record", "type": "button", "class": "btn-record", "data-max-duration": str(MAX_RECORDING_SECONDS), "onclick": "sonaToggleRecording()"},
                                     " Start recording",
                                 ),
                                 ui.tags.span({"id": "record-timer", "class": "record-timer"}, "0:00"),

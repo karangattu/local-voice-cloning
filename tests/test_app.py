@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import app as app_module
-from app import RECORDING_PROMPT, VOICE_SAMPLES_DIR, app, app_ui, server
+from app import MAX_RECORDING_SECONDS, RECORDING_PROMPT, VOICE_SAMPLES_DIR, app, app_ui, server
 
 
 def test_app_initialization():
@@ -41,6 +41,15 @@ def test_recording_prompt_is_defined_and_nonempty():
         "Did it capture the real me",
     ):
         assert phrase in RECORDING_PROMPT
+
+
+def test_recording_ui_stops_after_maximum_duration():
+    rendered = str(app_ui)
+
+    assert MAX_RECORDING_SECONDS == 30
+    assert f'data-max-duration="{MAX_RECORDING_SECONDS}"' in rendered
+    assert "maxDurationTimerId = setTimeout" in rendered
+    assert "Maximum recording length reached. Processing..." in rendered
 
 
 def test_voice_samples_dir_is_a_path_and_exists():
