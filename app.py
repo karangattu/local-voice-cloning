@@ -11,7 +11,13 @@ import shinyswatch
 from faicons import icon_svg
 from shiny import App, reactive, render, ui
 
-from src.audio_utils import analyze_reference_audio, apply_fades, load_audio, save_audio, trim_silence
+from src.audio_utils import (
+    analyze_reference_audio,
+    apply_fades,
+    load_audio,
+    save_audio,
+    trim_silence,
+)
 from src.cloner import ENGINE_NAME, get_shared_cloner
 from src.progress import progress_snapshot, run_with_progress
 
@@ -941,7 +947,7 @@ def server(input, output, session):
             audio_np = trim_silence(audio_np, sr)
             audio_np = apply_fades(audio_np, sr)
             save_audio(save_path, audio_np, sample_rate=sr)
-        except Exception:
+        except (OSError, RuntimeError, ValueError):
             save_path.write_bytes(wav_bytes)
         finally:
             tmp_path.unlink(missing_ok=True)
