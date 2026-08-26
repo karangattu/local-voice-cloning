@@ -41,14 +41,15 @@ app_ui = ui.page_fluid(
         ),
         ui.tags.link(
             rel="stylesheet",
-            href="https://fonts.googleapis.com/css2?family=Mona+Sans:ital,wght@0,200..900;1,200..900&display=swap",
+            href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Mona+Sans:ital,wght@0,200..900;1,200..900&display=swap",
         ),
         ui.tags.style(
             """
-            @import url('https://fonts.googleapis.com/css2?family=Mona+Sans:ital,wght@0,200..900;1,200..900&display=swap');
+            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Mona+Sans:ital,wght@0,200..900;1,200..900&display=swap');
 
             :root {
                 --font-sans: 'Mona Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                --font-text: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
                 --bg: #101017;
                 --surface: #15151e;
                 --surface-raised: #1b1a25;
@@ -74,7 +75,7 @@ app_ui = ui.page_fluid(
                 min-height: 100%;
             }
 
-            body, button, input, select, textarea {
+            body, button, select {
                 margin: 0;
                 font-family: var(--font-sans) !important;
                 font-size: 15px;
@@ -153,10 +154,12 @@ app_ui = ui.page_fluid(
                 background: #14131c !important;
                 border: 1px solid var(--border-strong) !important;
                 border-radius: 8px !important;
-                color: var(--text) !important;
-                padding: 17px !important;
-                font-size: 15px !important;
-                line-height: 1.6 !important;
+                color: #f7f5fa !important;
+                padding: 18px 20px !important;
+                font-family: var(--font-text) !important;
+                font-size: 16px !important;
+                line-height: 1.7 !important;
+                letter-spacing: -0.01em;
                 box-shadow: none !important;
             }
             #speech_text::placeholder, .form-control::placeholder { color: var(--subtle) !important; }
@@ -198,6 +201,8 @@ app_ui = ui.page_fluid(
                 border: 1px solid var(--border-strong) !important;
                 color: var(--text) !important;
                 border-radius: 7px !important;
+                font-family: var(--font-text) !important;
+                font-size: 14.5px !important;
                 box-shadow: none !important;
             }
             .form-control:focus, .form-select:focus, button:focus-visible, a:focus-visible {
@@ -406,18 +411,18 @@ app_ui = ui.page_fluid(
 
             .record-prompt {
                 margin-bottom: 18px;
-                padding: 16px 18px;
+                padding: 18px 20px;
                 border: 1px solid var(--border);
                 border-radius: 8px;
                 background: #14131c;
-                color: #f0ecf4;
-                font-family: var(--font-sans) !important;
-                font-size: 14.5px;
-                font-weight: 450;
-                letter-spacing: -0.15px;
-                line-height: 1.65;
+                color: #f7f5fa;
+                font-family: var(--font-text) !important;
+                font-size: 16.5px;
+                font-weight: 480;
+                letter-spacing: -0.01em;
+                line-height: 1.75;
                 white-space: pre-wrap;
-                max-height: 220px;
+                max-height: 240px;
                 overflow-y: auto;
             }
             .record-prompt-caption { color: var(--subtle); font-size: 12px; margin-bottom: 7px; }
@@ -575,15 +580,17 @@ app_ui = ui.page_fluid(
                 line-height: 1.4;
             }
             #ref_transcript {
-                min-height: 72px;
+                min-height: 84px;
                 resize: vertical;
                 background: #14131c !important;
                 border: 1px solid var(--border-strong) !important;
                 border-radius: 6px !important;
-                color: var(--text) !important;
-                padding: 10px 12px !important;
-                font-size: 13px !important;
-                line-height: 1.5 !important;
+                color: #f7f5fa !important;
+                padding: 12px 14px !important;
+                font-family: var(--font-text) !important;
+                font-size: 15px !important;
+                line-height: 1.65 !important;
+                letter-spacing: -0.01em;
             }
             .transcript-shimmer {
                 display: flex;
