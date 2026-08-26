@@ -117,35 +117,37 @@ def test_clone_voice_with_user_edited_transcript(tmp_path):
 
 
 def test_resolve_reference_transcript_states():
-    assert app_module.resolve_reference_transcript(None, {}, set()) == ("", "idle", False)
-    assert app_module.resolve_reference_transcript("/a.wav", {"/a.wav": "Text A"}, set()) == ("Text A", "ready", False)
-    assert app_module.resolve_reference_transcript("/b.wav", {}, {"/b.wav"}) == ("", "transcribing", False)
-    assert app_module.resolve_reference_transcript("/c.wav", {}, set()) == ("", "transcribing", True)
+    assert app_module.resolve_reference_transcript("", {}, set()) == ("", "idle", False)
+    assert app_module.resolve_reference_transcript("ref_a", {"ref_a": "Text A"}, set()) == ("Text A", "ready", False)
+    assert app_module.resolve_reference_transcript("ref_b", {}, {"ref_b"}) == ("", "transcribing", False)
+    assert app_module.resolve_reference_transcript("ref_c", {}, set()) == ("", "transcribing", True)
 
 
 def test_user_corrections_persist_across_voice_switches():
     cache = {}
     pending = set()
 
-    cache, pending, is_current, resolved = app_module.apply_transcription_result(
-        audio_path="/voice_a.wav",
+    cache, pending, is_current, resolved, err = app_module.apply_transcription_result(
+        ref_id="ref_a",
         transcript="I like bears",
-        current_ref_path="/voice_a.wav",
+        error=None,
+        current_ref_id="ref_a",
         cache=cache,
         pending=pending,
     )
     assert is_current is True
     assert resolved == "I like bears"
+    assert err is None
 
     cache = app_module.record_user_transcript_edit(
-        audio_path="/voice_a.wav",
+        ref_id="ref_a",
         edited_text="I like birds",
         cache=cache,
     )
-    assert cache["/voice_a.wav"] == "I like birds"
+    assert cache["ref_a"] == "I like birds"
 
     text_b, status_b, should_run_b = app_module.resolve_reference_transcript(
-        audio_path="/voice_b.wav",
+        ref_id="ref_b",
         cache=cache,
         pending=pending,
     )
@@ -154,7 +156,7 @@ def test_user_corrections_persist_across_voice_switches():
     assert should_run_b is True
 
     text_a, status_a, should_run_a = app_module.resolve_reference_transcript(
-        audio_path="/voice_a.wav",
+        ref_id="ref_a",
         cache=cache,
         pending=pending,
     )
@@ -165,31 +167,106 @@ def test_user_corrections_persist_across_voice_switches():
 
 def test_transcription_completion_does_not_leak_to_switched_reference():
     cache = {}
-    pending = {"/voice_a.wav", "/voice_b.wav"}
+    pending = {"ref_a", "ref_b"}
 
-    cache, pending, is_current, resolved = app_module.apply_transcription_result(
-        audio_path="/voice_a.wav",
+    cache, pending, is_current, resolved, err = app_module.apply_transcription_result(
+        ref_id="ref_a",
         transcript="Transcript of voice A",
-        current_ref_path="/voice_b.wav",
+        error=None,
+        current_ref_id="ref_b",
         cache=cache,
         pending=pending,
     )
 
     assert is_current is False
     assert resolved == "Transcript of voice A"
-    assert "/voice_a.wav" not in pending
-    assert "/voice_b.wav" in pending
-    assert cache["/voice_a.wav"] == "Transcript of voice A"
-    assert "/voice_b.wav" not in cache
+    assert err is None
+    assert "ref_a" not in pending
+    assert "ref_b" in pending
+    assert cache["ref_a"] == "Transcript of voice A"
+    assert "ref_b" not in cache
 
     text_b, status_b, should_run_b = app_module.resolve_reference_transcript(
-        audio_path="/voice_b.wav",
+        ref_id="ref_b",
         cache=cache,
         pending=pending,
     )
     assert text_b == ""
     assert status_b == "transcribing"
     assert should_run_b is False
+
+
+def test_transcription_failure_does_not_leak_or_trap_active_reference():
+    cache = {}
+    pending = {"ref_a", "ref_b"}
+
+    cache, pending, is_current, resolved, err = app_module.apply_transcription_result(
+        ref_id="ref_a",
+        transcript=None,
+        error="Whisper decoding error",
+        current_ref_id="ref_b",
+        cache=cache,
+        pending=pending,
+    )
+
+    assert is_current is False
+    assert resolved == ""
+    assert err == "Whisper decoding error"
+    assert "ref_a" not in pending
+    assert "ref_b" in pending
+
+    text_b, status_b, should_run_b = app_module.resolve_reference_transcript(
+        ref_id="ref_b",
+        cache=cache,
+        pending=pending,
+    )
+    assert text_b == ""
+    assert status_b == "transcribing"
+    assert should_run_b is False
+
+    text_a, status_a, should_run_a = app_module.resolve_reference_transcript(
+        ref_id="ref_a",
+        cache=cache,
+        pending=pending,
+    )
+    assert text_a == ""
+    assert status_a == "transcribing"
+    assert should_run_a is True
+
+
+def test_overwritten_audio_path_invalidates_old_transcript_cache(tmp_path):
+    wav_file = tmp_path / "karan.wav"
+    wav_file.write_bytes(b"initial audio recording")
+
+    id_1 = app_module.get_reference_id(wav_file)
+    cache = {id_1: "Transcript of first speech"}
+    pending = set()
+
+    text_1, status_1, should_run_1 = app_module.resolve_reference_transcript(
+        ref_id=id_1,
+        cache=cache,
+        pending=pending,
+    )
+    assert text_1 == "Transcript of first speech"
+    assert status_1 == "ready"
+    assert should_run_1 is False
+
+    import time
+    time.sleep(0.01)
+    wav_file.write_bytes(b"completely different speech content with different size")
+
+    id_2 = app_module.get_reference_id(wav_file)
+    assert id_1 != id_2
+
+    text_2, status_2, should_run_2 = app_module.resolve_reference_transcript(
+        ref_id=id_2,
+        cache=cache,
+        pending=pending,
+    )
+    assert text_2 == ""
+    assert status_2 == "transcribing"
+    assert should_run_2 is True
+
 
 
 
