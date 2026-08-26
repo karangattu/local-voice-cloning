@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import mimetypes
 import re
@@ -401,6 +402,83 @@ app_ui = ui.page_fluid(
             .btn-delete-voice:hover { background: rgba(239,125,121,.1) !important; }
             .library-empty { color: var(--subtle); font-size: 13px; margin-top: 12px; }
 
+            /* Transcript card */
+            .transcript-card {
+                margin-top: 14px;
+                padding: 14px;
+                border: 1px solid var(--border);
+                border-radius: 8px;
+                background: var(--surface);
+            }
+            .transcript-card-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 6px;
+            }
+            .transcript-title {
+                font-size: 13px;
+                font-weight: 650;
+                color: var(--text);
+                display: flex;
+                align-items: center;
+                gap: 7px;
+            }
+            .transcript-title svg {
+                width: 14px;
+                height: 14px;
+                fill: var(--mint);
+            }
+            .transcript-card-caption {
+                color: var(--muted);
+                font-size: 12px;
+                margin-bottom: 8px;
+                line-height: 1.4;
+            }
+            #ref_transcript {
+                min-height: 72px;
+                resize: vertical;
+                background: #14131c !important;
+                border: 1px solid var(--border-strong) !important;
+                border-radius: 6px !important;
+                color: var(--text) !important;
+                padding: 10px 12px !important;
+                font-size: 13px !important;
+                line-height: 1.5 !important;
+            }
+            .transcript-footer {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-top: 8px;
+            }
+            .transcript-status {
+                font-size: 11px;
+                color: var(--subtle);
+                display: flex;
+                align-items: center;
+                gap: 5px;
+            }
+            .transcript-status.transcribing {
+                color: var(--amber);
+            }
+            .transcript-status.ready {
+                color: var(--mint);
+            }
+            .btn-retranscribe {
+                padding: 3px 8px !important;
+                font-size: 11px !important;
+                border: 1px solid var(--border) !important;
+                background: var(--surface-soft) !important;
+                color: var(--muted) !important;
+                border-radius: 5px !important;
+                cursor: pointer;
+            }
+            .btn-retranscribe:hover {
+                color: var(--text) !important;
+                border-color: var(--border-strong) !important;
+            }
+
             @media (max-width: 940px) {
                 .app-header { grid-template-columns: 1fr auto; }
                 .privacy-note { display: none; }
@@ -670,23 +748,6 @@ app_ui = ui.page_fluid(
                             selected="auto",
                         ),
                     ),
-                    ui.div(
-                        {"class": "settings-disclosure"},
-                        ui.accordion(
-                            ui.accordion_panel(
-                                "Advanced settings",
-                                ui.input_text_area(
-                                    "ref_text_override",
-                                    "Reference transcript",
-                                    placeholder="Optional: exact words spoken in the reference. Leave blank for local auto-transcription.",
-                                    rows=2,
-                                    width="100%",
-                                ),
-                                icon=icon_svg("sliders"),
-                            ),
-                            open=False,
-                        ),
-                    ),
                 ),
                 ui.tags.aside(
                     {"class": "reference-pane", "aria-labelledby": "reference-heading"},
@@ -766,6 +827,7 @@ app_ui = ui.page_fluid(
                         ),
                     ),
                     ui.output_ui("reference_preview"),
+                    ui.output_ui("reference_transcript_section"),
                 ),
             ),
             ui.tags.section(
@@ -835,6 +897,68 @@ def _saved_voice_path(selected: str) -> Path | None:
     return path
 
 
+def get_reference_id(audio_path: str | Path | None) -> str:
+    if not audio_path:
+        return ""
+    path = Path(audio_path)
+    if not path.exists():
+        return str(audio_path)
+    try:
+        stat = path.stat()
+        return f"{path.resolve()}:{stat.st_mtime_ns}:{stat.st_size}"
+    except OSError:
+        return str(path)
+
+
+def resolve_reference_transcript(
+    ref_id: str,
+    cache: dict[str, str],
+    pending: set[str],
+) -> tuple[str, str, bool]:
+    if not ref_id:
+        return "", "idle", False
+    if ref_id in cache:
+        return cache[ref_id], "ready", False
+    if ref_id in pending:
+        return "", "transcribing", False
+    return "", "transcribing", True
+
+
+def apply_transcription_result(
+    ref_id: str,
+    transcript: str | None,
+    error: str | None,
+    current_ref_id: str,
+    cache: dict[str, str],
+    pending: set[str],
+) -> tuple[dict[str, str], set[str], bool, str, str | None]:
+    new_cache = dict(cache)
+    new_pending = set(pending)
+    new_pending.discard(ref_id)
+    is_current = bool(current_ref_id and current_ref_id == ref_id)
+
+    if error is None and transcript is not None:
+        if ref_id not in new_cache or not new_cache[ref_id].strip():
+            new_cache[ref_id] = transcript
+        resolved_text = new_cache[ref_id]
+        return new_cache, new_pending, is_current, resolved_text, None
+
+    resolved_text = new_cache.get(ref_id, "")
+    return new_cache, new_pending, is_current, resolved_text, error
+
+
+def record_user_transcript_edit(
+    ref_id: str,
+    edited_text: str | None,
+    cache: dict[str, str],
+) -> dict[str, str]:
+    if not ref_id or edited_text is None:
+        return cache
+    new_cache = dict(cache)
+    new_cache[ref_id] = edited_text
+    return new_cache
+
+
 def server(input, output, session):
     session_dir = Path(tempfile.gettempdir()) / "local-voice-cloning" / session.id
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -846,6 +970,82 @@ def server(input, output, session):
     last_recorded_path = reactive.value(None)
     last_recorded_name = reactive.value(None)
     library_refresh = reactive.value(0)
+    transcript_cache = reactive.value({})
+    pending_transcriptions = reactive.value(set())
+    ref_transcript_value = reactive.value("")
+    transcription_status = reactive.value("idle")
+
+    @reactive.extended_task
+    async def run_transcription(audio_path: str, ref_id: str, quality: str):
+        def work():
+            try:
+                transcript = get_shared_cloner(quality).transcribe(audio_path)
+                return ref_id, transcript, None
+            except Exception as exc:  # noqa: BLE001
+                return ref_id, None, str(exc)
+
+        return await asyncio.to_thread(work)
+
+    @reactive.effect
+    def _handle_transcription_result():
+        if run_transcription.status() != "success":
+            return
+
+        ref_id, transcript, error = run_transcription.result()
+        current_ref = active_reference()
+        current_ref_id = get_reference_id(current_ref[0]) if current_ref else ""
+
+        new_cache, new_pending, is_current, resolved_text, err = apply_transcription_result(
+            ref_id,
+            transcript,
+            error,
+            current_ref_id,
+            transcript_cache(),
+            pending_transcriptions(),
+        )
+        transcript_cache.set(new_cache)
+        pending_transcriptions.set(new_pending)
+
+        if is_current:
+            if err is not None:
+                transcription_status.set("error")
+                ui.notification_show(f"Transcription failed: {err}", type="warning")
+            else:
+                ref_transcript_value.set(resolved_text)
+                ui.update_text_area("ref_transcript", value=resolved_text)
+                transcription_status.set("ready")
+                ui.notification_show("Reference transcript ready for review.", type="message")
+
+    @reactive.effect
+    def _sync_reference_transcript():
+        ref = active_reference()
+        audio_path = ref[0] if ref else None
+        ref_id = get_reference_id(audio_path)
+        text, status, should_run = resolve_reference_transcript(
+            ref_id,
+            transcript_cache(),
+            pending_transcriptions(),
+        )
+        ref_transcript_value.set(text)
+        ui.update_text_area("ref_transcript", value=text)
+        transcription_status.set(status)
+
+        if should_run and audio_path:
+            new_pending = set(pending_transcriptions())
+            new_pending.add(ref_id)
+            pending_transcriptions.set(new_pending)
+            run_transcription(audio_path, ref_id, input.quality() or "high")
+
+    @reactive.effect
+    @reactive.event(input.ref_transcript)
+    def _save_user_transcript_edit():
+        ref = active_reference()
+        if not ref:
+            return
+        ref_id = get_reference_id(ref[0])
+        text = input.ref_transcript()
+        new_cache = record_user_transcript_edit(ref_id, text, transcript_cache())
+        transcript_cache.set(new_cache)
 
     @render.ui
     def engine_badge():
@@ -974,6 +1174,24 @@ def server(input, output, session):
             library_refresh.set(library_refresh() + 1)
             ui.notification_show(f"Deleted voice profile '{selected}'.", type="message")
 
+    @reactive.effect
+    @reactive.event(input.btn_retranscribe)
+    def _handle_retranscribe():
+        ref = active_reference()
+        if not ref:
+            ui.notification_show("No reference audio loaded to transcribe.", type="warning")
+            return
+        audio_path = ref[0]
+        ref_id = get_reference_id(audio_path)
+        new_pending = set(pending_transcriptions())
+        new_pending.add(ref_id)
+        pending_transcriptions.set(new_pending)
+        transcription_status.set("transcribing")
+        new_cache = dict(transcript_cache())
+        new_cache.pop(ref_id, None)
+        transcript_cache.set(new_cache)
+        run_transcription(audio_path, ref_id, input.quality() or "high")
+
     @render.ui
     def reference_preview():
         ref = active_reference()
@@ -1033,6 +1251,56 @@ def server(input, output, session):
             quality_feedback,
         )
 
+    @render.ui
+    def reference_transcript_section():
+        ref = active_reference()
+        if not ref:
+            return ui.div()
+
+        status = transcription_status()
+        if status == "transcribing":
+            status_badge = ui.span({"class": "transcript-status transcribing"}, icon_svg("spinner"), "Transcribing...")
+        elif status == "ready":
+            status_badge = ui.span({"class": "transcript-status ready"}, icon_svg("circle-check"), "Ready for review")
+        elif status == "error":
+            status_badge = ui.span({"class": "transcript-status"}, icon_svg("triangle-exclamation"), "Transcription failed")
+        else:
+            status_badge = ui.span({"class": "transcript-status"}, "Editable")
+
+        return ui.div(
+            {"class": "transcript-card"},
+            ui.div(
+                {"class": "transcript-card-header"},
+                ui.div(
+                    {"class": "transcript-title"},
+                    icon_svg("file-lines"),
+                    "Reference transcript",
+                ),
+                ui.input_action_button(
+                    "btn_retranscribe",
+                    ui.TagList(icon_svg("rotate-right"), " Re-transcribe"),
+                    class_="btn-retranscribe",
+                ),
+            ),
+            ui.div(
+                "Review words detected in your reference audio. You can edit any incorrect words before cloning.",
+                class_="transcript-card-caption",
+            ),
+            ui.input_text_area(
+                "ref_transcript",
+                None,
+                value=ref_transcript_value(),
+                placeholder="Exact words spoken in the reference recording...",
+                rows=3,
+                width="100%",
+            ),
+            ui.div(
+                {"class": "transcript-footer"},
+                status_badge,
+                ui.span("Passes to voice cloner", class_="transcript-status"),
+            ),
+        )
+
     @reactive.extended_task
     async def run_synthesis(
         ref_path: str,
@@ -1064,13 +1332,15 @@ def server(input, output, session):
             ui.notification_show("Write a script before creating audio.", type="warning")
             return
 
+        ref_text = (input.ref_transcript() or "").strip()
+
         output_audio_path.set(None)
         generation_stage.set("prepare")
         generation_started_at.set(time.monotonic())
         run_synthesis(
             ref[0],
             text,
-            input.ref_text_override() or "",
+            ref_text,
             input.quality() or "high",
             input.language() or "auto",
         )
