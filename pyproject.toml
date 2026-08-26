@@ -46,3 +46,7 @@ markers = [
     "integration: exercises the real Qwen3-TTS MLX model; slow, downloads weights on first run",
 ]
 addopts = "-m 'not integration'"
+filterwarnings = [
+    "ignore:.*Using `httpx` with `starlette.testclient` is deprecated.*",
+    "ignore::DeprecationWarning:starlette.*",
+]
