@@ -410,9 +410,12 @@ app_ui = ui.page_fluid(
                 border: 1px solid var(--border);
                 border-radius: 8px;
                 background: #14131c;
-                color: #d8d3dd;
-                font-size: 14px;
-                line-height: 1.7;
+                color: #f0ecf4;
+                font-family: var(--font-sans) !important;
+                font-size: 14.5px;
+                font-weight: 450;
+                letter-spacing: -0.15px;
+                line-height: 1.65;
                 white-space: pre-wrap;
                 max-height: 220px;
                 overflow-y: auto;
