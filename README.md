@@ -2,22 +2,26 @@
 
 Clone a voice locally with Qwen3-TTS 1.7B and Apple MLX. Reference audio and generated speech stay on your Mac.
 
-Provide a short voice recording and a script. The app produces 24-bit WAV and compressed MP3 audio. It shows each stage of local generation.
+Provide a short voice recording and a script. The app produces 24-bit WAV and compressed MP3 audio.
 
 ## Requirements
 
 - An Apple Silicon Mac
 - Python 3.10 or later
-- About 8 GB of free disk space for the high-fidelity voice model and automatic transcription model
+- About 8 GB of free disk space for the voice model and transcription model
 
-The app downloads the models from Hugging Face on first use. Later generations reuse the local model cache.
+The app downloads models from Hugging Face on first use. Later runs reuse the local cache.
 
 ## Installation
 
 ```bash
-uv venv .venv
-source .venv/bin/activate
-uv pip install -r requirements.txt
+uv sync
+```
+
+For development (adds pytest, ruff, httpx):
+
+```bash
+uv sync --extra dev
 ```
 
 ## Web app
@@ -25,23 +29,22 @@ uv pip install -r requirements.txt
 Start Sona:
 
 ```bash
-shiny run app.py
+uv run shiny run app.py
 ```
 
 Open [http://127.0.0.1:8000](http://127.0.0.1:8000), then:
 
-1. Upload a clean reference recording.
-2. Write the script you want the cloned voice to speak.
-3. Select **High fidelity · BF16** for the best output. Select **Fast draft · 8-bit** for faster drafts.
-4. Click **Create audio**. The progress panel shows preparation, model loading, voice synthesis, and finalization.
-5. Play or download the result as WAV or MP3.
-
-Open Advanced settings to enter the exact reference transcript. The app skips automatic transcription when you provide this text. If the field is blank, the app transcribes the first 12 seconds with Whisper Large V3 Turbo.
+1. Record yourself, upload a file, or pick a saved voice.
+2. Review the auto-generated reference transcript and correct any wrong words.
+3. Write the script you want the cloned voice to speak.
+4. Select **High fidelity** or **Fast draft** quality.
+5. Click **Create audio**.
+6. Play or download the result as WAV or MP3.
 
 ## CLI
 
 ```bash
-python -m src.cli \
+uv run python -m src.cli \
   --reference voice_sample.wav \
   --ref-text "The exact words spoken in the reference." \
   --text "Hello world" \
@@ -62,10 +65,10 @@ python -m src.cli \
 
 ## REST API
 
-Start the API on a separate port:
+Start the API:
 
 ```bash
-uvicorn src.api:app --host 127.0.0.1 --port 8001
+uv run uvicorn src.api:app --host 127.0.0.1 --port 8001
 ```
 
 Interactive documentation is available at [http://127.0.0.1:8001/docs](http://127.0.0.1:8001/docs).
@@ -87,35 +90,17 @@ curl -X POST http://127.0.0.1:8001/synthesize \
 |---|---|---|
 | `/health` | GET | Service and model-load state |
 | `/info` | GET | Engine, quality checkpoints, sample rate, and formats |
+| `/transcribe` | POST | Transcribe a reference audio file |
 | `/synthesize` | POST | Generate cloned speech |
-
-### `/synthesize` fields
-
-| Field | Required | Default | Description |
-|---|---|---|---|
-| `reference_audio` | yes | — | WAV, MP3, OGG, FLAC, or M4A, 50 MB maximum |
-| `text` | yes | — | Text for the cloned voice |
-| `ref_text` | no | automatic | Exact transcript of the reference window |
-| `quality` | no | `high` | `high` or `fast` |
-| `language` | no | `auto` | Output language or automatic detection |
-| `output_format` | no | `wav` | `wav` or `mp3` |
-
-The API still accepts the previous `speed`, `steps`, and `cfg_strength` fields. Qwen3-TTS ignores the F5-specific `steps` and `cfg_strength` values.
-
-The API returns the audio data. It also returns `X-Duration-Seconds` and `X-Sample-Rate` headers.
 
 ## Getting a natural clone
 
-Reference quality still matters, even with the stronger model:
-
-1. Use 5–12 seconds of natural, conversational speech.
+1. Use 5 to 12 seconds of natural, conversational speech.
 2. Record one speaker in a quiet room with no music.
 3. Use full sentences with normal expression rather than a flat read.
 4. Avoid clipping, aggressive noise removal, or heavy compression.
-5. Enter the exact reference transcript when possible.
+5. Review and correct the reference transcript before generating.
 6. Use punctuation to control pauses and expression.
-
-The web app checks duration, level, clipping, silence, and sample rate before generation.
 
 ## Quality models
 
@@ -123,18 +108,14 @@ The web app checks duration, level, clipping, silence, and sample rate before ge
 - **Fast draft:** `mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit`
 - **Automatic transcription:** `mlx-community/whisper-large-v3-turbo-asr-fp16`
 
-Each web app or API process caches the models that it uses. If you choose both quality modes, the process loads both checkpoints into memory.
-
 ## Tests
 
-Fast tests use small test models. They do not download model weights:
-
 ```bash
-python -m pytest
+uv run pytest
 ```
 
-Real-model integration tests are intentionally separate and slow:
+Integration tests download model weights and are slow:
 
 ```bash
-python -m pytest -m integration
+uv run pytest -m integration
 ```
