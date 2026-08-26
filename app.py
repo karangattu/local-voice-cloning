@@ -30,10 +30,25 @@ MAX_RECORDING_SECONDS = 30
 
 app_ui = ui.page_fluid(
     ui.tags.head(
-        ui.tags.meta(name="theme-color", content="#101017"),
+        ui.tags.link(
+            rel="preconnect",
+            href="https://fonts.googleapis.com",
+        ),
+        ui.tags.link(
+            rel="preconnect",
+            href="https://fonts.gstatic.com",
+            crossorigin="anonymous",
+        ),
+        ui.tags.link(
+            rel="stylesheet",
+            href="https://fonts.googleapis.com/css2?family=Mona+Sans:ital,wght@0,200..900;1,200..900&display=swap",
+        ),
         ui.tags.style(
             """
+            @import url('https://fonts.googleapis.com/css2?family=Mona+Sans:ital,wght@0,200..900;1,200..900&display=swap');
+
             :root {
+                --font-sans: 'Mona Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
                 --bg: #101017;
                 --surface: #15151e;
                 --surface-raised: #1b1a25;
@@ -59,9 +74,9 @@ app_ui = ui.page_fluid(
                 min-height: 100%;
             }
 
-            body {
+            body, button, input, select, textarea {
                 margin: 0;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
+                font-family: var(--font-sans) !important;
                 font-size: 15px;
                 line-height: 1.45;
             }
