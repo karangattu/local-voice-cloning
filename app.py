@@ -975,6 +975,26 @@ def server(input, output, session):
     ref_transcript_value = reactive.value("")
     transcription_status = reactive.value("idle")
 
+    @reactive.calc
+    def active_reference():
+        mode = input.ref_mode() if input.ref_mode() else "record"
+        if mode == "upload":
+            file_infos = input.audio_file()
+            if file_infos:
+                return (file_infos[0]["datapath"], file_infos[0]["name"])
+        elif mode == "record":
+            path = last_recorded_path()
+            if path:
+                name = last_recorded_name() or "recording"
+                return (str(path), f"{name}.wav")
+        elif mode == "library":
+            selected = input.voice_library() or ""
+            if selected:
+                path = _saved_voice_path(selected)
+                if path:
+                    return (str(path), f"{selected}.wav")
+        return None
+
     @reactive.extended_task
     async def run_transcription(audio_path: str, ref_id: str, quality: str):
         def work():
@@ -987,11 +1007,13 @@ def server(input, output, session):
         return await asyncio.to_thread(work)
 
     @reactive.effect
+    @reactive.event(run_transcription.result)
     def _handle_transcription_result():
-        if run_transcription.status() != "success":
+        res = run_transcription.result()
+        if not res:
             return
 
-        ref_id, transcript, error = run_transcription.result()
+        ref_id, transcript, error = res
         current_ref = active_reference()
         current_ref_id = get_reference_id(current_ref[0]) if current_ref else ""
 
@@ -1017,6 +1039,7 @@ def server(input, output, session):
                 ui.notification_show("Reference transcript ready for review.", type="message")
 
     @reactive.effect
+    @reactive.event(active_reference, ignore_init=False, ignore_none=False)
     def _sync_reference_transcript():
         ref = active_reference()
         audio_path = ref[0] if ref else None
@@ -1060,26 +1083,6 @@ def server(input, output, session):
     @render.text
     def character_count():
         return f"{len(input.speech_text() or ''):,} / 5,000"
-
-    @reactive.calc
-    def active_reference():
-        mode = input.ref_mode() if input.ref_mode() else "record"
-        if mode == "upload":
-            file_infos = input.audio_file()
-            if file_infos:
-                return (file_infos[0]["datapath"], file_infos[0]["name"])
-        elif mode == "record":
-            path = last_recorded_path()
-            if path:
-                name = last_recorded_name() or "recording"
-                return (str(path), f"{name}.wav")
-        elif mode == "library":
-            selected = input.voice_library() or ""
-            if selected:
-                path = _saved_voice_path(selected)
-                if path:
-                    return (str(path), f"{selected}.wav")
-        return None
 
     @reactive.calc
     def library_choices():
