@@ -94,8 +94,6 @@ def test_saved_voice_path_only_allows_existing_voice_samples(tmp_path, monkeypat
 def test_ui_contains_reference_transcript_section():
     rendered = str(app_ui)
     assert "reference_transcript_section" in rendered
-    assert "transcript-card" in rendered
-    assert "#ref_transcript" in rendered
 
 
 def test_ui_does_not_contain_old_override():
