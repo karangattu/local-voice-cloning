@@ -981,7 +981,7 @@ def server(input, output, session):
             try:
                 transcript = get_shared_cloner(quality).transcribe(audio_path)
                 return ref_id, transcript, None
-            except (OSError, RuntimeError, ValueError) as exc:
+            except Exception as exc:  # noqa: BLE001
                 return ref_id, None, str(exc)
 
         return await asyncio.to_thread(work)
