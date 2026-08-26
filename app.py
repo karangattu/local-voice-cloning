@@ -315,24 +315,35 @@ app_ui = ui.page_fluid(
             .btn-download svg { width: 13px; height: 13px; fill: currentColor; margin-right: 7px; vertical-align: -2px; }
 
             /* Reference mode selector */
-            .ref-mode-selector { margin-bottom: 16px; }
-            .ref-mode-selector .shiny-options-group { display: flex; gap: 0; }
+            .ref-mode-selector { margin-bottom: 18px; margin-top: 4px; }
+            .ref-mode-selector .shiny-options-group {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 20px;
+                align-items: center;
+            }
             .ref-mode-selector .form-check {
-                flex: 1; margin: 0; padding: 0;
-                border: 1px solid var(--border);
-                background: var(--surface);
+                display: inline-flex;
+                align-items: center;
+                gap: 7px;
+                margin: 0;
+                margin-right: 14px;
+                padding: 0;
+                cursor: pointer;
             }
-            .ref-mode-selector .form-check:first-child { border-radius: 7px 0 0 7px; }
-            .ref-mode-selector .form-check:last-child { border-radius: 0 7px 7px 0; border-left: 0; }
-            .ref-mode-selector .form-check:not(:first-child):not(:last-child) { border-left: 0; }
+            .ref-mode-selector .form-check-input {
+                margin: 0;
+                cursor: pointer;
+                accent-color: var(--mint);
+            }
             .ref-mode-selector .form-check-label {
-                width: 100%; text-align: center; padding: 9px 6px;
-                font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; margin: 0;
+                font-size: 13.5px;
+                font-weight: 560;
+                color: var(--text);
+                cursor: pointer;
+                margin: 0;
+                padding-left: 2px;
             }
-            .ref-mode-selector .form-check-input:checked + label {
-                color: var(--bg); background: var(--mint); border-color: var(--mint);
-            }
-            .ref-mode-selector .form-check-input { display: none; }
 
             /* Record panel */
             .record-panel { margin-top: 14px; }
