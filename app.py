@@ -175,8 +175,6 @@ app_ui = ui.page_fluid(
             .accordion-button::after { filter: invert(1); opacity: .65; }
             .accordion-body { background: var(--surface) !important; padding: 18px !important; }
 
-            .quality-options .form-check { margin-right: 22px; }
-            .quality-options .shiny-options-group { display: flex; flex-wrap: wrap; gap: 6px; }
             .form-check-input { background-color: #13121a; border-color: #77717f; }
             .form-check-input:checked { background-color: var(--mint); border-color: var(--mint); }
 
@@ -314,64 +312,76 @@ app_ui = ui.page_fluid(
             .btn-download:hover { border-color: var(--mint) !important; color: var(--mint-soft) !important; }
             .btn-download svg { width: 13px; height: 13px; fill: currentColor; margin-right: 7px; vertical-align: -2px; }
 
-            /* Segmented Controls (iOS / DAW Style) */
-            .ref-mode-selector { margin-bottom: 18px; margin-top: 4px; }
+            /* Segmented Controls (iOS / macOS DAW Style) */
+            .ref-mode-selector { margin-bottom: 18px; margin-top: 4px; width: 100%; }
+            .ref-mode-selector .shiny-input-container,
+            .quality-options .shiny-input-container {
+                width: 100% !important;
+                margin-bottom: 0 !important;
+            }
             .ref-mode-selector .shiny-options-group,
             .quality-options .shiny-options-group {
                 display: flex !important;
-                background: #0f0e15 !important;
+                background: #0d0c14 !important;
                 padding: 4px !important;
                 border-radius: 9px !important;
                 border: 1px solid var(--border-strong) !important;
                 gap: 4px !important;
                 width: 100% !important;
+                box-sizing: border-box !important;
             }
-            .ref-mode-selector .form-check,
-            .quality-options .form-check {
-                flex: 1 !important;
+            .ref-mode-selector .radio-inline,
+            .quality-options .radio-inline {
+                flex: 1 1 0 !important;
                 margin: 0 !important;
-                padding: 0 !important;
-                display: flex !important;
-                position: relative !important;
-            }
-            .ref-mode-selector .form-check-input,
-            .quality-options .form-check-input {
-                position: absolute !important;
-                opacity: 0 !important;
-                width: 0 !important;
-                height: 0 !important;
-                margin: 0 !important;
-                pointer-events: none !important;
-            }
-            .ref-mode-selector .form-check-label,
-            .quality-options .form-check-label {
-                flex: 1 !important;
+                padding: 8px 12px !important;
                 display: flex !important;
                 align-items: center !important;
                 justify-content: center !important;
-                padding: 8px 12px !important;
+                position: relative !important;
                 border-radius: 6px !important;
                 font-size: 13px !important;
                 font-weight: 580 !important;
                 color: var(--muted) !important;
                 cursor: pointer !important;
-                transition: all .2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+                transition: all .18s cubic-bezier(0.16, 1, 0.3, 1) !important;
                 white-space: nowrap !important;
-                margin: 0 !important;
                 user-select: none !important;
                 text-align: center !important;
             }
-            .ref-mode-selector .form-check-label:hover,
-            .quality-options .form-check-label:hover {
+            .ref-mode-selector .radio-inline:hover,
+            .quality-options .radio-inline:hover {
                 color: var(--text) !important;
                 background: rgba(255, 255, 255, 0.04) !important;
             }
-            .ref-mode-selector .form-check:has(.form-check-input:checked) .form-check-label,
-            .quality-options .form-check:has(.form-check-input:checked) .form-check-label {
+            .ref-mode-selector .radio-inline input[type="radio"],
+            .quality-options .radio-inline input[type="radio"] {
+                position: absolute !important;
+                opacity: 0 !important;
+                width: 0 !important;
+                height: 0 !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                pointer-events: none !important;
+                appearance: none !important;
+                -webkit-appearance: none !important;
+            }
+            .ref-mode-selector .radio-inline:has(input:checked),
+            .quality-options .radio-inline:has(input:checked) {
                 background: var(--surface-soft) !important;
                 color: var(--mint) !important;
                 font-weight: 680 !important;
                 box-shadow: 0 2px 6px rgba(0, 0, 0, .45), inset 0 0 0 1px rgba(114, 216, 170, .25) !important;
+            }
+            .ref-mode-selector .radio-inline span,
+            .quality-options .radio-inline span {
+                display: flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+                color: inherit !important;
+                font-weight: inherit !important;
+                margin: 0 !important;
+                padding: 0 !important;
             }
 
             /* Record panel & VU Meter */
