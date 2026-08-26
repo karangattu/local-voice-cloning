@@ -132,6 +132,16 @@ class LocalVoiceCloner:
                     self._stt_model = self._stt_loader(ASR_MODEL_ID)
         return self._stt_model
 
+    def _transcribe_canonical(self, canonical_ref_path: Path | str) -> str:
+        stt_result = self._ensure_stt_model().generate(
+            str(canonical_ref_path),
+            verbose=False,
+        )
+        transcript = str(getattr(stt_result, "text", "")).strip()
+        if not transcript:
+            raise RuntimeError("The reference recording could not be transcribed.")
+        return transcript
+
     def transcribe(self, reference_audio_path: str | Path) -> str:
         tensor_audio, ref_sr = load_audio(
             reference_audio_path,
@@ -147,14 +157,7 @@ class LocalVoiceCloner:
 
         try:
             sf.write(str(canonical_ref_path), audio_np, ref_sr, subtype="PCM_16")
-            stt_result = self._ensure_stt_model().generate(
-                str(canonical_ref_path),
-                verbose=False,
-            )
-            transcript = str(getattr(stt_result, "text", "")).strip()
-            if not transcript:
-                raise RuntimeError("The reference recording could not be transcribed.")
-            return transcript
+            return self._transcribe_canonical(canonical_ref_path)
         finally:
             canonical_ref_path.unlink(missing_ok=True)
 
@@ -192,13 +195,7 @@ class LocalVoiceCloner:
 
             transcript = reference_text.strip()
             if not transcript:
-                stt_result = self._ensure_stt_model().generate(
-                    str(canonical_ref_path),
-                    verbose=False,
-                )
-                transcript = str(getattr(stt_result, "text", "")).strip()
-                if not transcript:
-                    raise RuntimeError("The reference recording could not be transcribed.")
+                transcript = self._transcribe_canonical(canonical_ref_path)
 
             notify("voice")
             sample_rate = self.sample_rate

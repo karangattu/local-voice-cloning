@@ -748,23 +748,6 @@ app_ui = ui.page_fluid(
                             selected="auto",
                         ),
                     ),
-                    ui.div(
-                        {"class": "settings-disclosure"},
-                        ui.accordion(
-                            ui.accordion_panel(
-                                "Advanced settings",
-                                ui.input_text_area(
-                                    "ref_text_override",
-                                    "Reference transcript",
-                                    placeholder="Optional: exact words spoken in the reference. Leave blank for local auto-transcription.",
-                                    rows=2,
-                                    width="100%",
-                                ),
-                                icon=icon_svg("sliders"),
-                            ),
-                            open=False,
-                        ),
-                    ),
                 ),
                 ui.tags.aside(
                     {"class": "reference-pane", "aria-labelledby": "reference-heading"},
@@ -925,13 +908,14 @@ def server(input, output, session):
     last_recorded_path = reactive.value(None)
     last_recorded_name = reactive.value(None)
     library_refresh = reactive.value(0)
+    transcript_cache = reactive.value({})
     ref_transcript_value = reactive.value("")
     transcription_status = reactive.value("idle")
 
     @reactive.extended_task
     async def run_transcription(audio_path: str, quality: str):
         def work():
-            return get_shared_cloner(quality).transcribe(audio_path)
+            return audio_path, get_shared_cloner(quality).transcribe(audio_path)
 
         return await asyncio.to_thread(work)
 
@@ -939,14 +923,43 @@ def server(input, output, session):
     def _handle_transcription_result():
         status = run_transcription.status()
         if status == "success":
-            transcript = run_transcription.result()
-            ref_transcript_value.set(transcript)
-            ui.update_text_area("ref_transcript", value=transcript)
-            transcription_status.set("ready")
-            ui.notification_show("Reference transcript ready for review.", type="message")
+            audio_path, transcript = run_transcription.result()
+            new_cache = dict(transcript_cache())
+            new_cache[audio_path] = transcript
+            transcript_cache.set(new_cache)
+
+            current_ref = active_reference()
+            if current_ref and current_ref[0] == audio_path:
+                ref_transcript_value.set(transcript)
+                ui.update_text_area("ref_transcript", value=transcript)
+                transcription_status.set("ready")
+                ui.notification_show("Reference transcript ready for review.", type="message")
         elif status == "error":
-            transcription_status.set("error")
-            ui.notification_show(f"Transcription failed: {run_transcription.error()!s}", type="warning")
+            current_ref = active_reference()
+            if current_ref:
+                transcription_status.set("error")
+                ui.notification_show(f"Transcription failed: {run_transcription.error()!s}", type="warning")
+
+    @reactive.effect
+    def _sync_reference_transcript():
+        ref = active_reference()
+        if not ref:
+            ref_transcript_value.set("")
+            transcription_status.set("idle")
+            return
+
+        audio_path = ref[0]
+        cache = transcript_cache()
+        if audio_path in cache:
+            cached_text = cache[audio_path]
+            ref_transcript_value.set(cached_text)
+            ui.update_text_area("ref_transcript", value=cached_text)
+            transcription_status.set("ready")
+        else:
+            ref_transcript_value.set("")
+            ui.update_text_area("ref_transcript", value="")
+            transcription_status.set("transcribing")
+            run_transcription(audio_path, input.quality() or "high")
 
     @render.ui
     def engine_badge():
@@ -1056,9 +1069,7 @@ def server(input, output, session):
         last_recorded_path.set(str(save_path))
         last_recorded_name.set(name)
         library_refresh.set(library_refresh() + 1)
-        transcription_status.set("transcribing")
-        run_transcription(str(save_path), input.quality() or "high")
-        ui.notification_show(f"Saved voice profile '{name}'. Transcribing...", type="message")
+        ui.notification_show(f"Saved voice profile '{name}'.", type="message")
 
     @reactive.effect
     @reactive.event(input.btn_refresh_voices)
@@ -1084,8 +1095,9 @@ def server(input, output, session):
         if not ref:
             ui.notification_show("No reference audio loaded to transcribe.", type="warning")
             return
+        audio_path = ref[0]
         transcription_status.set("transcribing")
-        run_transcription(ref[0], input.quality() or "high")
+        run_transcription(audio_path, input.quality() or "high")
 
     @render.ui
     def reference_preview():
@@ -1227,11 +1239,7 @@ def server(input, output, session):
             ui.notification_show("Write a script before creating audio.", type="warning")
             return
 
-        ref_text = ""
-        if input.ref_transcript() is not None and input.ref_transcript().strip():
-            ref_text = input.ref_transcript().strip()
-        elif input.ref_text_override() and input.ref_text_override().strip():
-            ref_text = input.ref_text_override().strip()
+        ref_text = (input.ref_transcript() or "").strip()
 
         output_audio_path.set(None)
         generation_stage.set("prepare")
