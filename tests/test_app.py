@@ -116,20 +116,80 @@ def test_clone_voice_with_user_edited_transcript(tmp_path):
     assert tts_calls[0]["ref_text"] == user_edited_text
 
 
-def test_transcript_cache_isolation_prevents_voice_leakage():
+def test_resolve_reference_transcript_states():
+    assert app_module.resolve_reference_transcript(None, {}, set()) == ("", "idle", False)
+    assert app_module.resolve_reference_transcript("/a.wav", {"/a.wav": "Text A"}, set()) == ("Text A", "ready", False)
+    assert app_module.resolve_reference_transcript("/b.wav", {}, {"/b.wav"}) == ("", "transcribing", False)
+    assert app_module.resolve_reference_transcript("/c.wav", {}, set()) == ("", "transcribing", True)
+
+
+def test_user_corrections_persist_across_voice_switches():
     cache = {}
+    pending = set()
 
-    voice_a_path = "/path/to/voice_a.wav"
-    voice_b_path = "/path/to/voice_b.wav"
+    cache, pending, is_current, resolved = app_module.apply_transcription_result(
+        audio_path="/voice_a.wav",
+        transcript="I like bears",
+        current_ref_path="/voice_a.wav",
+        cache=cache,
+        pending=pending,
+    )
+    assert is_current is True
+    assert resolved == "I like bears"
 
-    cache[voice_a_path] = "Transcript of Voice A"
+    cache = app_module.record_user_transcript_edit(
+        audio_path="/voice_a.wav",
+        edited_text="I like birds",
+        cache=cache,
+    )
+    assert cache["/voice_a.wav"] == "I like birds"
 
-    active_ref = (voice_b_path, "voice_b.wav")
+    text_b, status_b, should_run_b = app_module.resolve_reference_transcript(
+        audio_path="/voice_b.wav",
+        cache=cache,
+        pending=pending,
+    )
+    assert text_b == ""
+    assert status_b == "transcribing"
+    assert should_run_b is True
 
-    assert active_ref[0] not in cache
-    assert cache.get(active_ref[0]) is None
+    text_a, status_a, should_run_a = app_module.resolve_reference_transcript(
+        audio_path="/voice_a.wav",
+        cache=cache,
+        pending=pending,
+    )
+    assert text_a == "I like birds"
+    assert status_a == "ready"
+    assert should_run_a is False
 
-    cache[voice_b_path] = "Transcript of Voice B"
-    assert cache.get(active_ref[0]) == "Transcript of Voice B"
+
+def test_transcription_completion_does_not_leak_to_switched_reference():
+    cache = {}
+    pending = {"/voice_a.wav", "/voice_b.wav"}
+
+    cache, pending, is_current, resolved = app_module.apply_transcription_result(
+        audio_path="/voice_a.wav",
+        transcript="Transcript of voice A",
+        current_ref_path="/voice_b.wav",
+        cache=cache,
+        pending=pending,
+    )
+
+    assert is_current is False
+    assert resolved == "Transcript of voice A"
+    assert "/voice_a.wav" not in pending
+    assert "/voice_b.wav" in pending
+    assert cache["/voice_a.wav"] == "Transcript of voice A"
+    assert "/voice_b.wav" not in cache
+
+    text_b, status_b, should_run_b = app_module.resolve_reference_transcript(
+        audio_path="/voice_b.wav",
+        cache=cache,
+        pending=pending,
+    )
+    assert text_b == ""
+    assert status_b == "transcribing"
+    assert should_run_b is False
+
 
 

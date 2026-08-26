@@ -897,6 +897,48 @@ def _saved_voice_path(selected: str) -> Path | None:
     return path
 
 
+def resolve_reference_transcript(
+    audio_path: str | None,
+    cache: dict[str, str],
+    pending: set[str],
+) -> tuple[str, str, bool]:
+    if not audio_path:
+        return "", "idle", False
+    if audio_path in cache:
+        return cache[audio_path], "ready", False
+    if audio_path in pending:
+        return "", "transcribing", False
+    return "", "transcribing", True
+
+
+def apply_transcription_result(
+    audio_path: str,
+    transcript: str,
+    current_ref_path: str | None,
+    cache: dict[str, str],
+    pending: set[str],
+) -> tuple[dict[str, str], set[str], bool, str]:
+    new_cache = dict(cache)
+    if audio_path not in new_cache or not new_cache[audio_path].strip():
+        new_cache[audio_path] = transcript
+    new_pending = set(pending)
+    new_pending.discard(audio_path)
+    is_current = bool(current_ref_path and current_ref_path == audio_path)
+    return new_cache, new_pending, is_current, new_cache[audio_path]
+
+
+def record_user_transcript_edit(
+    audio_path: str | None,
+    edited_text: str | None,
+    cache: dict[str, str],
+) -> dict[str, str]:
+    if not audio_path or edited_text is None:
+        return cache
+    new_cache = dict(cache)
+    new_cache[audio_path] = edited_text
+    return new_cache
+
+
 def server(input, output, session):
     session_dir = Path(tempfile.gettempdir()) / "local-voice-cloning" / session.id
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -909,6 +951,7 @@ def server(input, output, session):
     last_recorded_name = reactive.value(None)
     library_refresh = reactive.value(0)
     transcript_cache = reactive.value({})
+    pending_transcriptions = reactive.value(set())
     ref_transcript_value = reactive.value("")
     transcription_status = reactive.value("idle")
 
@@ -924,42 +967,62 @@ def server(input, output, session):
         status = run_transcription.status()
         if status == "success":
             audio_path, transcript = run_transcription.result()
-            new_cache = dict(transcript_cache())
-            new_cache[audio_path] = transcript
-            transcript_cache.set(new_cache)
-
             current_ref = active_reference()
-            if current_ref and current_ref[0] == audio_path:
-                ref_transcript_value.set(transcript)
-                ui.update_text_area("ref_transcript", value=transcript)
+            current_ref_path = current_ref[0] if current_ref else None
+
+            new_cache, new_pending, is_current, resolved_text = apply_transcription_result(
+                audio_path,
+                transcript,
+                current_ref_path,
+                transcript_cache(),
+                pending_transcriptions(),
+            )
+            transcript_cache.set(new_cache)
+            pending_transcriptions.set(new_pending)
+
+            if is_current:
+                ref_transcript_value.set(resolved_text)
+                ui.update_text_area("ref_transcript", value=resolved_text)
                 transcription_status.set("ready")
                 ui.notification_show("Reference transcript ready for review.", type="message")
         elif status == "error":
             current_ref = active_reference()
             if current_ref:
+                new_pending = set(pending_transcriptions())
+                new_pending.discard(current_ref[0])
+                pending_transcriptions.set(new_pending)
                 transcription_status.set("error")
                 ui.notification_show(f"Transcription failed: {run_transcription.error()!s}", type="warning")
 
     @reactive.effect
     def _sync_reference_transcript():
         ref = active_reference()
-        if not ref:
-            ref_transcript_value.set("")
-            transcription_status.set("idle")
-            return
+        audio_path = ref[0] if ref else None
+        text, status, should_run = resolve_reference_transcript(
+            audio_path,
+            transcript_cache(),
+            pending_transcriptions(),
+        )
+        ref_transcript_value.set(text)
+        ui.update_text_area("ref_transcript", value=text)
+        transcription_status.set(status)
 
-        audio_path = ref[0]
-        cache = transcript_cache()
-        if audio_path in cache:
-            cached_text = cache[audio_path]
-            ref_transcript_value.set(cached_text)
-            ui.update_text_area("ref_transcript", value=cached_text)
-            transcription_status.set("ready")
-        else:
-            ref_transcript_value.set("")
-            ui.update_text_area("ref_transcript", value="")
-            transcription_status.set("transcribing")
+        if should_run and audio_path:
+            new_pending = set(pending_transcriptions())
+            new_pending.add(audio_path)
+            pending_transcriptions.set(new_pending)
             run_transcription(audio_path, input.quality() or "high")
+
+    @reactive.effect
+    @reactive.event(input.ref_transcript)
+    def _save_user_transcript_edit():
+        ref = active_reference()
+        if not ref:
+            return
+        audio_path = ref[0]
+        text = input.ref_transcript()
+        new_cache = record_user_transcript_edit(audio_path, text, transcript_cache())
+        transcript_cache.set(new_cache)
 
     @render.ui
     def engine_badge():
@@ -1096,7 +1159,13 @@ def server(input, output, session):
             ui.notification_show("No reference audio loaded to transcribe.", type="warning")
             return
         audio_path = ref[0]
+        new_pending = set(pending_transcriptions())
+        new_pending.add(audio_path)
+        pending_transcriptions.set(new_pending)
         transcription_status.set("transcribing")
+        new_cache = dict(transcript_cache())
+        new_cache.pop(audio_path, None)
+        transcript_cache.set(new_cache)
         run_transcription(audio_path, input.quality() or "high")
 
     @render.ui
