@@ -25,7 +25,11 @@ from src.progress import progress_snapshot, run_with_progress
 VOICE_SAMPLES_DIR = Path(__file__).parent / "voice_samples"
 VOICE_SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
 
-RECORDING_PROMPT = """Hi, I'm [your name], and this is my natural speaking voice. The quick brown fox jumps over the lazy dog. How vexingly quick daft zebras jump! Did it capture the real me?"""
+RECORDING_TEMPLATES = {
+    "standard": """Hi, I'm [your name], and this is my natural speaking voice. The quick brown fox jumps over the lazy dog. How vexingly quick daft zebras jump! Did it capture the real me?""",
+    "conversational": """Hi, I’m [name]. Today is a beautiful day, and I’m feeling pretty good. Can you believe it? I have three things to finish, then I’m heading home.""",
+}
+RECORDING_PROMPT = RECORDING_TEMPLATES["standard"]
 MAX_RECORDING_SECONDS = 30
 
 app_ui = ui.page_fluid(
@@ -335,12 +339,14 @@ app_ui = ui.page_fluid(
             /* Segmented Controls (iOS / macOS DAW Style) */
             .ref-mode-selector { margin-bottom: 18px; margin-top: 4px; width: 100%; }
             .ref-mode-selector .shiny-input-container,
-            .quality-options .shiny-input-container {
+            .quality-options .shiny-input-container,
+            .template-options .shiny-input-container {
                 width: 100% !important;
                 margin-bottom: 0 !important;
             }
             .ref-mode-selector .shiny-options-group,
-            .quality-options .shiny-options-group {
+            .quality-options .shiny-options-group,
+            .template-options .shiny-options-group {
                 display: flex !important;
                 background: #0d0c14 !important;
                 padding: 4px !important;
@@ -351,7 +357,8 @@ app_ui = ui.page_fluid(
                 box-sizing: border-box !important;
             }
             .ref-mode-selector .radio-inline,
-            .quality-options .radio-inline {
+            .quality-options .radio-inline,
+            .template-options .radio-inline {
                 flex: 1 1 0 !important;
                 margin: 0 !important;
                 padding: 8px 12px !important;
@@ -370,12 +377,14 @@ app_ui = ui.page_fluid(
                 text-align: center !important;
             }
             .ref-mode-selector .radio-inline:hover,
-            .quality-options .radio-inline:hover {
+            .quality-options .radio-inline:hover,
+            .template-options .radio-inline:hover {
                 color: var(--text) !important;
                 background: rgba(255, 255, 255, 0.04) !important;
             }
             .ref-mode-selector .radio-inline input[type="radio"],
-            .quality-options .radio-inline input[type="radio"] {
+            .quality-options .radio-inline input[type="radio"],
+            .template-options .radio-inline input[type="radio"] {
                 position: absolute !important;
                 opacity: 0 !important;
                 width: 0 !important;
@@ -387,14 +396,16 @@ app_ui = ui.page_fluid(
                 -webkit-appearance: none !important;
             }
             .ref-mode-selector .radio-inline:has(input:checked),
-            .quality-options .radio-inline:has(input:checked) {
+            .quality-options .radio-inline:has(input:checked),
+            .template-options .radio-inline:has(input:checked) {
                 background: var(--surface-soft) !important;
                 color: var(--mint) !important;
                 font-weight: 680 !important;
                 box-shadow: 0 2px 6px rgba(0, 0, 0, .45), inset 0 0 0 1px rgba(114, 216, 170, .25) !important;
             }
             .ref-mode-selector .radio-inline span,
-            .quality-options .radio-inline span {
+            .quality-options .radio-inline span,
+            .template-options .radio-inline span {
                 display: flex !important;
                 align-items: center !important;
                 justify-content: center !important;
@@ -408,6 +419,9 @@ app_ui = ui.page_fluid(
             .record-panel { margin-top: 14px; }
             .voice-name-field { margin-bottom: 16px; }
             .voice-name-field .control-label { color: var(--muted); font-size: 12px; font-weight: 560; margin-bottom: 7px; }
+            .template-options { margin-bottom: 12px; }
+            .template-options .form-group { margin: 0; }
+            .template-options .control-label { color: var(--muted); font-size: 12px; font-weight: 560; margin-bottom: 7px; }
 
             .record-prompt {
                 margin-bottom: 18px;
@@ -1108,13 +1122,23 @@ app_ui = ui.page_fluid(
                                 ),
                             ),
                             ui.div(
+                                {"class": "template-options"},
+                                ui.input_radio_buttons(
+                                    "record_template",
+                                    "Recording template",
+                                    choices={
+                                        "standard": "Standard",
+                                        "conversational": "Conversational",
+                                    },
+                                    selected="standard",
+                                    inline=True,
+                                ),
+                            ),
+                            ui.div(
                                 {"class": "record-prompt-caption"},
                                 "Read this aloud at a natural pace:",
                             ),
-                            ui.tags.pre(
-                                {"class": "record-prompt"},
-                                RECORDING_PROMPT,
-                            ),
+                            ui.output_ui("recording_prompt_display"),
                             ui.div(
                                 {"class": "record-controls"},
                                 ui.tags.button(
@@ -1428,6 +1452,15 @@ def server(input, output, session):
         if est > 0:
             return f"{chars:,} / 5,000 chars · ~{est:.0f}s speech"
         return f"{chars:,} / 5,000 chars"
+
+    @render.ui
+    def recording_prompt_display():
+        choice = input.record_template() if input.record_template() else "standard"
+        prompt_text = RECORDING_TEMPLATES.get(choice, RECORDING_PROMPT)
+        return ui.tags.pre(
+            {"class": "record-prompt"},
+            prompt_text,
+        )
 
     @reactive.calc
     def library_choices():

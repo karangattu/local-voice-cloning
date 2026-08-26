@@ -5,7 +5,15 @@ import numpy as np
 import soundfile as sf
 
 import app as app_module
-from app import MAX_RECORDING_SECONDS, RECORDING_PROMPT, VOICE_SAMPLES_DIR, app, app_ui, server
+from app import (
+    MAX_RECORDING_SECONDS,
+    RECORDING_PROMPT,
+    RECORDING_TEMPLATES,
+    VOICE_SAMPLES_DIR,
+    app,
+    app_ui,
+    server,
+)
 from src.cloner import LocalVoiceCloner
 
 
@@ -32,7 +40,7 @@ def test_selected_listening_room_ui_contains_the_core_workflow():
 
 def test_ui_contains_new_reference_modes():
     rendered = str(app_ui)
-    for copy in ("Record", "Upload", "Saved voices", "Voice name", "record-prompt"):
+    for copy in ("Record", "Upload", "Saved voices", "Voice name", "recording_prompt_display", "record_template"):
         assert copy in rendered
 
 
@@ -46,6 +54,16 @@ def test_recording_prompt_is_defined_and_nonempty():
         "Did it capture the real me",
     ):
         assert phrase in RECORDING_PROMPT
+
+
+def test_recording_templates_defined_and_contain_conversational():
+    assert "standard" in RECORDING_TEMPLATES
+    assert "conversational" in RECORDING_TEMPLATES
+    assert RECORDING_TEMPLATES["standard"] == RECORDING_PROMPT
+    conversational = RECORDING_TEMPLATES["conversational"]
+    assert "Hi, I’m [name]." in conversational
+    assert "Today is a beautiful day, and I’m feeling pretty good." in conversational
+    assert "Can you believe it? I have three things to finish, then I’m heading home." in conversational
 
 
 def test_recording_ui_stops_after_maximum_duration():
