@@ -314,38 +314,67 @@ app_ui = ui.page_fluid(
             .btn-download:hover { border-color: var(--mint) !important; color: var(--mint-soft) !important; }
             .btn-download svg { width: 13px; height: 13px; fill: currentColor; margin-right: 7px; vertical-align: -2px; }
 
-            /* Reference mode selector */
+            /* Segmented Controls (iOS / DAW Style) */
             .ref-mode-selector { margin-bottom: 18px; margin-top: 4px; }
-            .ref-mode-selector .shiny-options-group {
-                display: flex;
-                flex-wrap: wrap;
-                gap: 20px;
-                align-items: center;
+            .ref-mode-selector .shiny-options-group,
+            .quality-options .shiny-options-group {
+                display: flex !important;
+                background: #0f0e15 !important;
+                padding: 4px !important;
+                border-radius: 9px !important;
+                border: 1px solid var(--border-strong) !important;
+                gap: 4px !important;
+                width: 100% !important;
             }
-            .ref-mode-selector .form-check {
-                display: inline-flex;
-                align-items: center;
-                gap: 7px;
-                margin: 0;
-                margin-right: 14px;
-                padding: 0;
-                cursor: pointer;
+            .ref-mode-selector .form-check,
+            .quality-options .form-check {
+                flex: 1 !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                display: flex !important;
+                position: relative !important;
             }
-            .ref-mode-selector .form-check-input {
-                margin: 0;
-                cursor: pointer;
-                accent-color: var(--mint);
+            .ref-mode-selector .form-check-input,
+            .quality-options .form-check-input {
+                position: absolute !important;
+                opacity: 0 !important;
+                width: 0 !important;
+                height: 0 !important;
+                margin: 0 !important;
+                pointer-events: none !important;
             }
-            .ref-mode-selector .form-check-label {
-                font-size: 13.5px;
-                font-weight: 560;
-                color: var(--text);
-                cursor: pointer;
-                margin: 0;
-                padding-left: 2px;
+            .ref-mode-selector .form-check-label,
+            .quality-options .form-check-label {
+                flex: 1 !important;
+                display: flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+                padding: 8px 12px !important;
+                border-radius: 6px !important;
+                font-size: 13px !important;
+                font-weight: 580 !important;
+                color: var(--muted) !important;
+                cursor: pointer !important;
+                transition: all .2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+                white-space: nowrap !important;
+                margin: 0 !important;
+                user-select: none !important;
+                text-align: center !important;
+            }
+            .ref-mode-selector .form-check-label:hover,
+            .quality-options .form-check-label:hover {
+                color: var(--text) !important;
+                background: rgba(255, 255, 255, 0.04) !important;
+            }
+            .ref-mode-selector .form-check:has(.form-check-input:checked) .form-check-label,
+            .quality-options .form-check:has(.form-check-input:checked) .form-check-label {
+                background: var(--surface-soft) !important;
+                color: var(--mint) !important;
+                font-weight: 680 !important;
+                box-shadow: 0 2px 6px rgba(0, 0, 0, .45), inset 0 0 0 1px rgba(114, 216, 170, .25) !important;
             }
 
-            /* Record panel */
+            /* Record panel & VU Meter */
             .record-panel { margin-top: 14px; }
             .voice-name-field { margin-bottom: 16px; }
             .voice-name-field .control-label { color: var(--muted); font-size: 12px; font-weight: 560; margin-bottom: 7px; }
@@ -368,13 +397,14 @@ app_ui = ui.page_fluid(
             .record-controls { display: flex; align-items: center; gap: 14px; }
             .btn-record {
                 display: inline-flex; align-items: center; gap: 9px;
-                min-height: 46px; padding: 0 22px;
+                min-height: 46px; padding: 0 20px;
                 border: 1px solid var(--mint) !important;
                 border-radius: 8px !important;
                 background: var(--surface-soft) !important;
                 color: var(--mint) !important;
                 font-size: 14px !important; font-weight: 700 !important;
                 cursor: pointer;
+                transition: all .18s ease;
             }
             .btn-record:hover { background: rgba(114,216,170,.12) !important; }
             .btn-record.recording {
@@ -397,7 +427,46 @@ app_ui = ui.page_fluid(
                 font-variant-numeric: tabular-nums;
                 font-size: 18px; color: var(--text);
             }
-            .record-status { color: var(--subtle); font-size: 12px; margin-top: 8px; }
+            .record-vu-meter {
+                display: inline-flex;
+                align-items: center;
+                gap: 3px;
+                height: 22px;
+                padding: 0 6px;
+                background: rgba(0,0,0,0.25);
+                border-radius: 4px;
+                border: 1px solid var(--border);
+            }
+            .vu-bar {
+                width: 3px;
+                height: 6px;
+                background: var(--border-strong);
+                border-radius: 2px;
+                transition: height 0.08s ease, background-color 0.08s ease;
+            }
+            .vu-bar.active {
+                background: var(--mint);
+                box-shadow: 0 0 5px rgba(114,216,170,.5);
+            }
+            .record-progress-track {
+                width: 100%;
+                height: 4px;
+                background: rgba(255,255,255,0.06);
+                border-radius: 3px;
+                margin-top: 10px;
+                overflow: hidden;
+            }
+            .record-progress-fill {
+                height: 100%;
+                width: 0%;
+                background: var(--mint);
+                transition: width 0.2s linear;
+                border-radius: 3px;
+            }
+            .record-progress-fill.danger {
+                background: var(--danger);
+            }
+            .record-status { color: var(--subtle); font-size: 12px; margin-top: 6px; }
 
             /* Library panel */
             .library-panel { margin-top: 14px; }
@@ -426,6 +495,7 @@ app_ui = ui.page_fluid(
                 justify-content: space-between;
                 align-items: center;
                 margin-bottom: 6px;
+                gap: 8px;
             }
             .transcript-title {
                 font-size: 13px;
@@ -439,6 +509,36 @@ app_ui = ui.page_fluid(
                 width: 14px;
                 height: 14px;
                 fill: var(--mint);
+            }
+            .transcript-actions {
+                display: flex;
+                gap: 6px;
+                align-items: center;
+            }
+            .btn-transcript-action {
+                display: inline-flex;
+                align-items: center;
+                gap: 4px;
+                padding: 3px 8px !important;
+                font-size: 11px !important;
+                font-weight: 560 !important;
+                border: 1px solid var(--border) !important;
+                background: var(--surface-soft) !important;
+                color: var(--muted) !important;
+                border-radius: 5px !important;
+                cursor: pointer;
+                transition: all .15s ease;
+                text-decoration: none;
+            }
+            .btn-transcript-action:hover {
+                color: var(--text) !important;
+                border-color: var(--border-strong) !important;
+                background: rgba(255, 255, 255, 0.08) !important;
+            }
+            .btn-transcript-action svg {
+                width: 11px;
+                height: 11px;
+                fill: currentColor;
             }
             .transcript-card-caption {
                 color: var(--muted);
@@ -456,6 +556,24 @@ app_ui = ui.page_fluid(
                 padding: 10px 12px !important;
                 font-size: 13px !important;
                 line-height: 1.5 !important;
+            }
+            .transcript-shimmer {
+                display: flex;
+                flex-direction: column;
+                gap: 8px;
+                padding: 14px 0 10px;
+            }
+            .shimmer-line {
+                height: 12px;
+                border-radius: 4px;
+                background: linear-gradient(90deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.09) 50%, rgba(255,255,255,0.03) 100%);
+                background-size: 200% 100%;
+                animation: shimmer-anim 1.5s infinite linear;
+            }
+            .shimmer-line.short { width: 60%; }
+            @keyframes shimmer-anim {
+                0% { background-position: 200% 0; }
+                100% { background-position: -200% 0; }
             }
             .transcript-footer {
                 display: flex;
@@ -476,18 +594,75 @@ app_ui = ui.page_fluid(
             .transcript-status.ready {
                 color: var(--mint);
             }
-            .btn-retranscribe {
-                padding: 3px 8px !important;
-                font-size: 11px !important;
-                border: 1px solid var(--border) !important;
-                background: var(--surface-soft) !important;
-                color: var(--muted) !important;
-                border-radius: 5px !important;
-                cursor: pointer;
+
+            /* Quality badges, speed controls & keyboard shortcut */
+            .quality-pill-group {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 6px;
+                margin-top: 10px;
             }
-            .btn-retranscribe:hover {
-                color: var(--text) !important;
-                border-color: var(--border-strong) !important;
+            .quality-pill {
+                display: inline-flex;
+                align-items: center;
+                gap: 5px;
+                padding: 3px 8px;
+                border-radius: 5px;
+                font-size: 11px;
+                font-weight: 560;
+            }
+            .quality-pill.good {
+                background: rgba(114,216,170,.1);
+                color: var(--mint);
+                border: 1px solid rgba(114,216,170,.25);
+            }
+            .quality-pill.warn {
+                background: rgba(215,146,47,.12);
+                color: #f0c477;
+                border: 1px solid rgba(215,146,47,.3);
+            }
+            .speed-control-group {
+                display: flex;
+                align-items: center;
+                gap: 5px;
+                margin-top: 12px;
+            }
+            .speed-label {
+                font-size: 11px;
+                color: var(--subtle);
+                margin-right: 4px;
+            }
+            .btn-speed {
+                padding: 2px 7px;
+                font-size: 11px;
+                font-weight: 600;
+                border-radius: 4px;
+                border: 1px solid var(--border);
+                background: var(--surface-soft);
+                color: var(--muted);
+                cursor: pointer;
+                transition: all .15s ease;
+            }
+            .btn-speed:hover {
+                color: var(--text);
+                border-color: var(--border-strong);
+            }
+            .btn-speed.active {
+                background: var(--mint);
+                color: #0d2018;
+                border-color: var(--mint);
+            }
+            .kbd-shortcut {
+                display: inline-block;
+                padding: 1px 5px;
+                font-size: 10px;
+                font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                border-radius: 4px;
+                background: rgba(0,0,0,0.3);
+                border: 1px solid rgba(255,255,255,0.15);
+                color: inherit;
+                margin-left: 6px;
+                vertical-align: middle;
             }
 
             @media (max-width: 940px) {
@@ -520,6 +695,8 @@ app_ui = ui.page_fluid(
                 let mediaRecorder = null;
                 let audioChunks = [];
                 let audioContext = null;
+                let analyserNode = null;
+                let animationFrameId = null;
                 let mediaStream = null;
                 let isRecording = false;
                 let timerId = null;
@@ -541,6 +718,49 @@ app_ui = ui.page_fluid(
                 function setTimer(seconds) {
                     const el = document.getElementById('record-timer');
                     if (el) el.textContent = Math.floor(seconds / 60) + ':' + String(Math.floor(seconds % 60)).padStart(2, '0');
+                    const maxDuration = Number(document.getElementById('btn-record')?.dataset.maxDuration) || 30;
+                    const pct = Math.min(100, (seconds / maxDuration) * 100);
+                    const fill = document.getElementById('record-progress-fill');
+                    if (fill) {
+                        fill.style.width = pct + '%';
+                        if (pct > 80) fill.classList.add('danger');
+                        else fill.classList.remove('danger');
+                    }
+                }
+
+                function updateVU() {
+                    if (!analyserNode || !isRecording) return;
+                    const dataArray = new Uint8Array(analyserNode.frequencyBinCount);
+                    analyserNode.getByteFrequencyData(dataArray);
+                    let sum = 0;
+                    for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+                    const avg = sum / dataArray.length;
+                    const normalized = Math.min(1, avg / 70);
+                    const vuBars = document.querySelectorAll('#record-vu-meter .vu-bar');
+                    vuBars.forEach(function(bar, index) {
+                        const threshold = (index + 1) / (vuBars.length + 1);
+                        if (normalized >= threshold) {
+                            bar.classList.add('active');
+                            bar.style.height = (7 + (index + 1) * 3) + 'px';
+                        } else {
+                            bar.classList.remove('active');
+                            bar.style.height = '6px';
+                        }
+                    });
+                    animationFrameId = requestAnimationFrame(updateVU);
+                }
+
+                function resetVU() {
+                    const vuBars = document.querySelectorAll('#record-vu-meter .vu-bar');
+                    vuBars.forEach(function(bar) {
+                        bar.classList.remove('active');
+                        bar.style.height = '6px';
+                    });
+                    const fill = document.getElementById('record-progress-fill');
+                    if (fill) {
+                        fill.style.width = '0%';
+                        fill.classList.remove('danger');
+                    }
                 }
 
                 function setStatus(msg) {
@@ -559,7 +779,6 @@ app_ui = ui.page_fluid(
                     const numChannels = 1;
                     const sampleRate = audioBuffer.sampleRate;
                     const source = audioBuffer.getChannelData(0);
-                    // down-mix to mono if needed
                     let samples = source;
                     if (audioBuffer.numberOfChannels > 1) {
                         samples = new Float32Array(source.length);
@@ -620,6 +839,11 @@ app_ui = ui.page_fluid(
                         .then(function(stream) {
                             mediaStream = stream;
                             audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                            const source = audioContext.createMediaStreamSource(stream);
+                            analyserNode = audioContext.createAnalyser();
+                            analyserNode.fftSize = 64;
+                            source.connect(analyserNode);
+
                             mediaRecorder = new MediaRecorder(stream);
                             audioChunks = [];
                             mediaRecorder.ondataavailable = function(e) {
@@ -645,6 +869,7 @@ app_ui = ui.page_fluid(
                                 }).finally(function() {
                                     if (mediaStream) mediaStream.getTracks().forEach(function(t) { t.stop(); });
                                     if (audioContext) { audioContext.close(); audioContext = null; }
+                                    analyserNode = null;
                                 });
                             };
                             mediaRecorder.start();
@@ -652,9 +877,10 @@ app_ui = ui.page_fluid(
                             startTime = Date.now();
                             setButtonState(true);
                             setStatus('Recording...');
+                            updateVU();
                             timerId = setInterval(function() {
                                 setTimer((Date.now() - startTime) / 1000);
-                            }, 200);
+                            }, 150);
                             const maxDuration = Number(document.getElementById('btn-record').dataset.maxDuration) || 30;
                             maxDurationTimerId = setTimeout(function() {
                                 setTimer(maxDuration);
@@ -676,8 +902,55 @@ app_ui = ui.page_fluid(
                     setButtonState(false);
                     if (timerId) { clearInterval(timerId); timerId = null; }
                     if (maxDurationTimerId) { clearTimeout(maxDurationTimerId); maxDurationTimerId = null; }
+                    if (animationFrameId) { cancelAnimationFrame(animationFrameId); animationFrameId = null; }
+                    resetVU();
                     setStatus(statusMessage || 'Processing...');
                 }
+
+                window.sonaCopyTranscript = function(btn) {
+                    const text = document.getElementById('ref_transcript')?.value || '';
+                    if (!text) return;
+                    navigator.clipboard.writeText(text).then(function() {
+                        const orig = btn.innerHTML;
+                        btn.innerHTML = '<svg width="11" height="11" viewBox="0 0 448 512" fill="currentColor"><path d="M438.6 105.4c12.5 12.5 12.5 32.8 0 45.3l-256 256c-12.5 12.5-32.8 12.5-45.3 0l-128-128c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0L160 338.7 393.4 105.4c12.5-12.5 32.8-12.5 45.3 0z"/></svg> Copied';
+                        setTimeout(function() { btn.innerHTML = orig; }, 1800);
+                    });
+                };
+
+                window.sonaUseAsScript = function() {
+                    const text = document.getElementById('ref_transcript')?.value || '';
+                    if (!text) return;
+                    const speechArea = document.getElementById('speech_text');
+                    if (speechArea) {
+                        speechArea.value = text;
+                        speechArea.dispatchEvent(new Event('input', { bubbles: true }));
+                        if (typeof Shiny !== 'undefined') {
+                            Shiny.setInputValue('speech_text', text);
+                        }
+                        speechArea.focus();
+                    }
+                };
+
+                window.sonaSetSpeed = function(btn, rate) {
+                    const player = btn.closest('.result-player');
+                    const audio = player ? player.querySelector('audio') : null;
+                    if (audio) audio.playbackRate = rate;
+                    const group = btn.closest('.speed-control-group');
+                    if (group) {
+                        group.querySelectorAll('.btn-speed').forEach(function(b) { b.classList.remove('active'); });
+                    }
+                    btn.classList.add('active');
+                };
+
+                document.addEventListener('keydown', function(e) {
+                    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                        const btn = document.getElementById('btn_generate');
+                        if (btn && !btn.disabled) {
+                            e.preventDefault();
+                            btn.click();
+                        }
+                    }
+                });
             })();
             """
         ),
@@ -813,7 +1086,19 @@ app_ui = ui.page_fluid(
                                     {"id": "btn-record", "type": "button", "class": "btn-record", "data-max-duration": str(MAX_RECORDING_SECONDS), "onclick": "sonaToggleRecording()"},
                                     " Start recording",
                                 ),
+                                ui.div(
+                                    {"id": "record-vu-meter", "class": "record-vu-meter", "aria-label": "Audio level"},
+                                    ui.tags.span({"class": "vu-bar"}),
+                                    ui.tags.span({"class": "vu-bar"}),
+                                    ui.tags.span({"class": "vu-bar"}),
+                                    ui.tags.span({"class": "vu-bar"}),
+                                    ui.tags.span({"class": "vu-bar"}),
+                                ),
                                 ui.tags.span({"id": "record-timer", "class": "record-timer"}, "0:00"),
+                            ),
+                            ui.div(
+                                {"class": "record-progress-track"},
+                                ui.div({"id": "record-progress-fill", "class": "record-progress-fill"}),
                             ),
                             ui.tags.div({"id": "record-status", "class": "record-status"}, "Ready"),
                         ),
@@ -847,7 +1132,11 @@ app_ui = ui.page_fluid(
                     {"class": "transport-actions"},
                     ui.input_action_button(
                         "btn_generate",
-                        ui.TagList(icon_svg("wave-square"), "Create audio"),
+                        ui.TagList(
+                            icon_svg("wave-square"),
+                            "Create audio",
+                            ui.span("⌘↵", class_="kbd-shortcut"),
+                        ),
                         class_="btn-create w-100",
                     ),
                     ui.input_action_button(
@@ -877,6 +1166,11 @@ app_ui = ui.page_fluid(
     ),
     theme=shinyswatch.theme.darkly,
 )
+
+
+def estimate_speech_duration_seconds(text: str) -> float:
+    words = len(text.strip().split()) if text.strip() else 0
+    return words / 2.4
 
 
 def _guess_mime_type(filename: str) -> str:
@@ -1093,7 +1387,12 @@ def server(input, output, session):
 
     @render.text
     def character_count():
-        return f"{len(input.speech_text() or ''):,} / 5,000"
+        text = input.speech_text() or ""
+        chars = len(text)
+        est = estimate_speech_duration_seconds(text)
+        if est > 0:
+            return f"{chars:,} / 5,000 chars · ~{est:.0f}s speech"
+        return f"{chars:,} / 5,000 chars"
 
     @reactive.calc
     def library_choices():
@@ -1227,23 +1526,18 @@ def server(input, output, session):
         except (ValueError, OSError, RuntimeError):
             report = None
 
-        quality_feedback = ui.div()
-        if report is not None:
-            if report["warnings"]:
-                quality_feedback = ui.div(
-                    {"class": "quality-box quality-warn"},
-                    ui.strong("This sample may reduce naturalness"),
-                    ui.tags.ul(*[ui.tags.li(w) for w in report["warnings"]]),
-                )
-            else:
-                quality_feedback = ui.div(
-                    {"class": "quality-box quality-good"},
-                    "Reference quality checks passed.",
-                )
-
         duration = report["duration_seconds"] if report else 0.0
         sample_rate = report["sample_rate"] if report else 0
         used = min(duration, 12.0)
+
+        quality_pills = []
+        if report is not None:
+            if not report["warnings"]:
+                quality_pills.append(ui.span({"class": "quality-pill good"}, icon_svg("circle-check"), "Clean levels"))
+            for w in report["warnings"]:
+                quality_pills.append(ui.span({"class": "quality-pill warn"}, icon_svg("triangle-exclamation"), w))
+        quality_feedback = ui.div({"class": "quality-pill-group"}, *quality_pills) if quality_pills else ui.div()
+
         return ui.div(
             {"class": "reference-file"},
             ui.div({"class": "file-name"}, display_name),
@@ -1274,12 +1568,60 @@ def server(input, output, session):
         status = transcription_status()
         if status == "transcribing":
             status_badge = ui.span({"class": "transcript-status transcribing"}, icon_svg("spinner"), "Transcribing...")
+            content = ui.div(
+                {"class": "transcript-shimmer"},
+                ui.div({"class": "shimmer-line"}),
+                ui.div({"class": "shimmer-line short"}),
+            )
+            action_buttons = []
         elif status == "ready":
             status_badge = ui.span({"class": "transcript-status ready"}, icon_svg("circle-check"), "Ready for review")
+            content = ui.input_text_area(
+                "ref_transcript",
+                None,
+                value=ref_transcript_value(),
+                placeholder="Exact words spoken in the reference recording...",
+                rows=3,
+                width="100%",
+            )
+            action_buttons = [
+                ui.tags.button(
+                    ui.TagList(icon_svg("copy"), " Copy"),
+                    type="button",
+                    class_="btn-transcript-action",
+                    onclick="sonaCopyTranscript(this)",
+                    title="Copy transcript to clipboard",
+                ),
+                ui.tags.button(
+                    ui.TagList(icon_svg("pen"), " Use as script"),
+                    type="button",
+                    class_="btn-transcript-action",
+                    onclick="sonaUseAsScript()",
+                    title="Paste transcript into script area",
+                ),
+            ]
         elif status == "error":
             status_badge = ui.span({"class": "transcript-status"}, icon_svg("triangle-exclamation"), "Transcription failed")
+            content = ui.input_text_area(
+                "ref_transcript",
+                None,
+                value=ref_transcript_value(),
+                placeholder="Exact words spoken in the reference recording...",
+                rows=3,
+                width="100%",
+            )
+            action_buttons = []
         else:
             status_badge = ui.span({"class": "transcript-status"}, "Editable")
+            content = ui.input_text_area(
+                "ref_transcript",
+                None,
+                value=ref_transcript_value(),
+                placeholder="Exact words spoken in the reference recording...",
+                rows=3,
+                width="100%",
+            )
+            action_buttons = []
 
         return ui.div(
             {"class": "transcript-card"},
@@ -1290,24 +1632,21 @@ def server(input, output, session):
                     icon_svg("file-lines"),
                     "Reference transcript",
                 ),
-                ui.input_action_button(
-                    "btn_retranscribe",
-                    ui.TagList(icon_svg("rotate-right"), " Re-transcribe"),
-                    class_="btn-retranscribe",
+                ui.div(
+                    {"class": "transcript-actions"},
+                    *action_buttons,
+                    ui.input_action_button(
+                        "btn_retranscribe",
+                        ui.TagList(icon_svg("rotate-right"), " Re-transcribe"),
+                        class_="btn-transcript-action",
+                    ),
                 ),
             ),
             ui.div(
                 "Review words detected in your reference audio. You can edit any incorrect words before cloning.",
                 class_="transcript-card-caption",
             ),
-            ui.input_text_area(
-                "ref_transcript",
-                None,
-                value=ref_transcript_value(),
-                placeholder="Exact words spoken in the reference recording...",
-                rows=3,
-                width="100%",
-            ),
+            content,
             ui.div(
                 {"class": "transcript-footer"},
                 status_badge,
@@ -1456,10 +1795,15 @@ def server(input, output, session):
     @render.ui
     def output_status():
         if run_synthesis.status() == "success" and output_audio_path():
+            started = generation_started_at()
+            elapsed_str = ""
+            if started is not None:
+                elapsed = max(0.1, time.monotonic() - started)
+                elapsed_str = f" in {elapsed:.1f}s"
             return ui.div(
                 {"class": "status-chip ready"},
                 ui.span({"class": "status-dot"}),
-                "Ready to play",
+                f"Ready to play{elapsed_str}",
             )
         return ui.div(
             {"class": "status-chip"},
@@ -1508,13 +1852,24 @@ def server(input, output, session):
             )
 
         return ui.div(
-            {"class": "output-surface result-player"},
-            ui.tags.audio(
-                controls=True,
-                autoplay=True,
-                src=f"data:audio/wav;base64,{b64_wav}",
+            {"class": "output-surface"},
+            ui.div(
+                {"class": "result-player"},
+                ui.tags.audio(
+                    controls=True,
+                    autoplay=True,
+                    src=f"data:audio/wav;base64,{b64_wav}",
+                ),
+                ui.div({"class": "download-group"}, *buttons),
             ),
-            ui.div({"class": "download-group"}, *buttons),
+            ui.div(
+                {"class": "speed-control-group"},
+                ui.span("Playback speed:", class_="speed-label"),
+                ui.tags.button("0.8×", type="button", class_="btn-speed", onclick="sonaSetSpeed(this, 0.8)"),
+                ui.tags.button("1.0×", type="button", class_="btn-speed active", onclick="sonaSetSpeed(this, 1.0)"),
+                ui.tags.button("1.25×", type="button", class_="btn-speed", onclick="sonaSetSpeed(this, 1.25)"),
+                ui.tags.button("1.5×", type="button", class_="btn-speed", onclick="sonaSetSpeed(this, 1.5)"),
+            ),
         )
 
 

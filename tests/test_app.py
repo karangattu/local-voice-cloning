@@ -268,5 +268,25 @@ def test_overwritten_audio_path_invalidates_old_transcript_cache(tmp_path):
     assert should_run_2 is True
 
 
+def test_estimate_speech_duration_seconds():
+    assert app_module.estimate_speech_duration_seconds("") == 0.0
+    assert app_module.estimate_speech_duration_seconds("   ") == 0.0
+    words_24 = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four"
+    assert round(app_module.estimate_speech_duration_seconds(words_24), 1) == 10.0
 
 
+def test_ui_contains_vu_meter_and_progress_track():
+    rendered = str(app_ui)
+    assert "record-vu-meter" in rendered
+    assert "vu-bar" in rendered
+    assert "record-progress-track" in rendered
+    assert "record-progress-fill" in rendered
+
+
+def test_ui_contains_keyboard_shortcut_listener():
+    rendered = str(app_ui)
+    assert "sonaCopyTranscript" in rendered
+    assert "sonaUseAsScript" in rendered
+    assert "sonaSetSpeed" in rendered
+    assert "kbd-shortcut" in rendered
+    assert "⌘↵" in rendered
