@@ -103,3 +103,42 @@ def test_synthesize_rejects_unknown_language(reference_wav):
         )
     assert response.status_code == 422
     assert "Unsupported language" in response.json()["detail"]
+
+
+def test_transcribe_endpoint(reference_wav, monkeypatch):
+    import src.api as api_module
+
+    class DummyCloner:
+        def transcribe(self, _path):
+            return "Transcribed words."
+
+    monkeypatch.setattr(api_module, "get_shared_cloner", lambda _quality: DummyCloner())
+
+    with open(reference_wav, "rb") as f:
+        response = client.post(
+            "/transcribe",
+            files={"reference_audio": ("ref.wav", f, "audio/wav")},
+            data={"quality": "high"},
+        )
+    assert response.status_code == 200
+    assert response.json() == {"transcript": "Transcribed words."}
+
+
+def test_transcribe_rejects_empty_upload():
+    response = client.post(
+        "/transcribe",
+        files={"reference_audio": ("ref.wav", b"", "audio/wav")},
+    )
+    assert response.status_code == 422
+
+
+def test_transcribe_rejects_unknown_quality(reference_wav):
+    with open(reference_wav, "rb") as f:
+        response = client.post(
+            "/transcribe",
+            files={"reference_audio": ("ref.wav", f, "audio/wav")},
+            data={"quality": "invalid"},
+        )
+    assert response.status_code == 422
+    assert "Unknown quality" in response.json()["detail"]
+

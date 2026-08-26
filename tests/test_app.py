@@ -66,3 +66,11 @@ def test_saved_voice_path_only_allows_existing_voice_samples(tmp_path, monkeypat
     assert app_module._saved_voice_path("saved") == tmp_path / "saved.wav"
     assert app_module._saved_voice_path("missing") is None
     assert app_module._saved_voice_path("../outside") is None
+
+
+def test_ui_contains_reference_transcript_section():
+    rendered = str(app_ui)
+    assert "reference_transcript_section" in rendered
+    assert "transcript-card" in rendered
+    assert "#ref_transcript" in rendered
+

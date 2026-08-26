@@ -63,6 +63,40 @@ def info():
     }
 
 
+@app.post("/transcribe")
+async def transcribe(
+    reference_audio: Annotated[UploadFile, File(description="Voice sample to transcribe (wav/mp3/ogg/flac/m4a)")],
+    quality: Annotated[
+        str,
+        Form(description="Model quality: high (BF16) or fast (8-bit)"),
+    ] = "high",
+):
+    quality = quality.lower().strip()
+    try:
+        model_id_for_quality(quality)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    ref_bytes = await reference_audio.read()
+    if len(ref_bytes) == 0:
+        raise HTTPException(status_code=422, detail="Uploaded reference audio is empty.")
+    if len(ref_bytes) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Reference audio exceeds the 50 MB limit.")
+
+    ref_suffix = Path(reference_audio.filename or "reference.wav").suffix or ".wav"
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ref_path = Path(tmpdir) / f"reference{ref_suffix}"
+        ref_path.write_bytes(ref_bytes)
+        try:
+            transcript = get_shared_cloner(quality).transcribe(ref_path)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        except (OSError, RuntimeError) as e:
+            raise HTTPException(status_code=500, detail=f"Transcription failed: {e}") from e
+
+    return {"transcript": transcript}
+
+
 @app.post("/synthesize")
 async def synthesize(
     reference_audio: Annotated[UploadFile, File(description="Voice sample to clone (wav/mp3/ogg/flac/m4a)")],

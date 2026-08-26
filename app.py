@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import mimetypes
 import re
@@ -401,6 +402,83 @@ app_ui = ui.page_fluid(
             .btn-delete-voice:hover { background: rgba(239,125,121,.1) !important; }
             .library-empty { color: var(--subtle); font-size: 13px; margin-top: 12px; }
 
+            /* Transcript card */
+            .transcript-card {
+                margin-top: 14px;
+                padding: 14px;
+                border: 1px solid var(--border);
+                border-radius: 8px;
+                background: var(--surface);
+            }
+            .transcript-card-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 6px;
+            }
+            .transcript-title {
+                font-size: 13px;
+                font-weight: 650;
+                color: var(--text);
+                display: flex;
+                align-items: center;
+                gap: 7px;
+            }
+            .transcript-title svg {
+                width: 14px;
+                height: 14px;
+                fill: var(--mint);
+            }
+            .transcript-card-caption {
+                color: var(--muted);
+                font-size: 12px;
+                margin-bottom: 8px;
+                line-height: 1.4;
+            }
+            #ref_transcript {
+                min-height: 72px;
+                resize: vertical;
+                background: #14131c !important;
+                border: 1px solid var(--border-strong) !important;
+                border-radius: 6px !important;
+                color: var(--text) !important;
+                padding: 10px 12px !important;
+                font-size: 13px !important;
+                line-height: 1.5 !important;
+            }
+            .transcript-footer {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-top: 8px;
+            }
+            .transcript-status {
+                font-size: 11px;
+                color: var(--subtle);
+                display: flex;
+                align-items: center;
+                gap: 5px;
+            }
+            .transcript-status.transcribing {
+                color: var(--amber);
+            }
+            .transcript-status.ready {
+                color: var(--mint);
+            }
+            .btn-retranscribe {
+                padding: 3px 8px !important;
+                font-size: 11px !important;
+                border: 1px solid var(--border) !important;
+                background: var(--surface-soft) !important;
+                color: var(--muted) !important;
+                border-radius: 5px !important;
+                cursor: pointer;
+            }
+            .btn-retranscribe:hover {
+                color: var(--text) !important;
+                border-color: var(--border-strong) !important;
+            }
+
             @media (max-width: 940px) {
                 .app-header { grid-template-columns: 1fr auto; }
                 .privacy-note { display: none; }
@@ -766,6 +844,7 @@ app_ui = ui.page_fluid(
                         ),
                     ),
                     ui.output_ui("reference_preview"),
+                    ui.output_ui("reference_transcript_section"),
                 ),
             ),
             ui.tags.section(
@@ -846,6 +925,28 @@ def server(input, output, session):
     last_recorded_path = reactive.value(None)
     last_recorded_name = reactive.value(None)
     library_refresh = reactive.value(0)
+    ref_transcript_value = reactive.value("")
+    transcription_status = reactive.value("idle")
+
+    @reactive.extended_task
+    async def run_transcription(audio_path: str, quality: str):
+        def work():
+            return get_shared_cloner(quality).transcribe(audio_path)
+
+        return await asyncio.to_thread(work)
+
+    @reactive.effect
+    def _handle_transcription_result():
+        status = run_transcription.status()
+        if status == "success":
+            transcript = run_transcription.result()
+            ref_transcript_value.set(transcript)
+            ui.update_text_area("ref_transcript", value=transcript)
+            transcription_status.set("ready")
+            ui.notification_show("Reference transcript ready for review.", type="message")
+        elif status == "error":
+            transcription_status.set("error")
+            ui.notification_show(f"Transcription failed: {run_transcription.error()!s}", type="warning")
 
     @render.ui
     def engine_badge():
@@ -955,7 +1056,9 @@ def server(input, output, session):
         last_recorded_path.set(str(save_path))
         last_recorded_name.set(name)
         library_refresh.set(library_refresh() + 1)
-        ui.notification_show(f"Saved voice profile '{name}'.", type="message")
+        transcription_status.set("transcribing")
+        run_transcription(str(save_path), input.quality() or "high")
+        ui.notification_show(f"Saved voice profile '{name}'. Transcribing...", type="message")
 
     @reactive.effect
     @reactive.event(input.btn_refresh_voices)
@@ -973,6 +1076,16 @@ def server(input, output, session):
             path.unlink()
             library_refresh.set(library_refresh() + 1)
             ui.notification_show(f"Deleted voice profile '{selected}'.", type="message")
+
+    @reactive.effect
+    @reactive.event(input.btn_retranscribe)
+    def _handle_retranscribe():
+        ref = active_reference()
+        if not ref:
+            ui.notification_show("No reference audio loaded to transcribe.", type="warning")
+            return
+        transcription_status.set("transcribing")
+        run_transcription(ref[0], input.quality() or "high")
 
     @render.ui
     def reference_preview():
@@ -1033,6 +1146,56 @@ def server(input, output, session):
             quality_feedback,
         )
 
+    @render.ui
+    def reference_transcript_section():
+        ref = active_reference()
+        if not ref:
+            return ui.div()
+
+        status = transcription_status()
+        if status == "transcribing":
+            status_badge = ui.span({"class": "transcript-status transcribing"}, icon_svg("spinner"), "Transcribing...")
+        elif status == "ready":
+            status_badge = ui.span({"class": "transcript-status ready"}, icon_svg("circle-check"), "Ready for review")
+        elif status == "error":
+            status_badge = ui.span({"class": "transcript-status"}, icon_svg("triangle-exclamation"), "Transcription failed")
+        else:
+            status_badge = ui.span({"class": "transcript-status"}, "Editable")
+
+        return ui.div(
+            {"class": "transcript-card"},
+            ui.div(
+                {"class": "transcript-card-header"},
+                ui.div(
+                    {"class": "transcript-title"},
+                    icon_svg("file-lines"),
+                    "Reference transcript",
+                ),
+                ui.input_action_button(
+                    "btn_retranscribe",
+                    ui.TagList(icon_svg("rotate-right"), " Re-transcribe"),
+                    class_="btn-retranscribe",
+                ),
+            ),
+            ui.div(
+                "Review words detected in your reference audio. You can edit any incorrect words before cloning.",
+                class_="transcript-card-caption",
+            ),
+            ui.input_text_area(
+                "ref_transcript",
+                None,
+                value=ref_transcript_value(),
+                placeholder="Exact words spoken in the reference recording...",
+                rows=3,
+                width="100%",
+            ),
+            ui.div(
+                {"class": "transcript-footer"},
+                status_badge,
+                ui.span("Passes to voice cloner", class_="transcript-status"),
+            ),
+        )
+
     @reactive.extended_task
     async def run_synthesis(
         ref_path: str,
@@ -1064,13 +1227,19 @@ def server(input, output, session):
             ui.notification_show("Write a script before creating audio.", type="warning")
             return
 
+        ref_text = ""
+        if input.ref_transcript() is not None and input.ref_transcript().strip():
+            ref_text = input.ref_transcript().strip()
+        elif input.ref_text_override() and input.ref_text_override().strip():
+            ref_text = input.ref_text_override().strip()
+
         output_audio_path.set(None)
         generation_stage.set("prepare")
         generation_started_at.set(time.monotonic())
         run_synthesis(
             ref[0],
             text,
-            input.ref_text_override() or "",
+            ref_text,
             input.quality() or "high",
             input.language() or "auto",
         )

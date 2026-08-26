@@ -132,6 +132,32 @@ class LocalVoiceCloner:
                     self._stt_model = self._stt_loader(ASR_MODEL_ID)
         return self._stt_model
 
+    def transcribe(self, reference_audio_path: str | Path) -> str:
+        tensor_audio, ref_sr = load_audio(
+            reference_audio_path,
+            target_sr=self.sample_rate,
+            max_duration_seconds=MAX_REFERENCE_SECONDS,
+        )
+        audio_np = tensor_audio.squeeze().numpy()
+        if len(audio_np) == 0:
+            raise ValueError("Reference audio is empty.")
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            canonical_ref_path = Path(tmp.name)
+
+        try:
+            sf.write(str(canonical_ref_path), audio_np, ref_sr, subtype="PCM_16")
+            stt_result = self._ensure_stt_model().generate(
+                str(canonical_ref_path),
+                verbose=False,
+            )
+            transcript = str(getattr(stt_result, "text", "")).strip()
+            if not transcript:
+                raise RuntimeError("The reference recording could not be transcribed.")
+            return transcript
+        finally:
+            canonical_ref_path.unlink(missing_ok=True)
+
     def clone_voice(
         self,
         reference_audio_path: str | Path,

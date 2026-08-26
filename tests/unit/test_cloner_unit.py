@@ -127,6 +127,21 @@ def test_clone_voice_auto_transcribes_when_reference_text_is_missing(sample_voic
     assert tts_model.calls[0]["ref_text"] == "Automatically transcribed reference."
 
 
+def test_transcribe_reference_audio(sample_voice_file):
+    stt_model = FakeSTTModel("Transcribed words for user review.")
+    stt_loads: list[str] = []
+    cloner = cloner_module.LocalVoiceCloner(
+        stt_loader=lambda model_id: stt_loads.append(model_id) or stt_model,
+    )
+
+    transcript = cloner.transcribe(sample_voice_file)
+
+    assert transcript == "Transcribed words for user review."
+    assert stt_loads == ["mlx-community/whisper-large-v3-turbo-asr-fp16"]
+    assert len(stt_model.calls) == 1
+    assert stt_model.calls[0][0].endswith(".wav")
+
+
 def test_clone_voice_rejects_empty_text_before_loading_models(sample_voice_file):
     loaded_models: list[str] = []
     cloner = cloner_module.LocalVoiceCloner(
