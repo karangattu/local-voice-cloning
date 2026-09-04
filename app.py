@@ -8,7 +8,9 @@ import time
 import uuid
 from pathlib import Path
 
+import numpy as np
 import shinyswatch
+import soundfile as sf
 from faicons import icon_svg
 from shiny import App, reactive, render, ui
 
@@ -34,20 +36,8 @@ MAX_RECORDING_SECONDS = 30
 
 app_ui = ui.page_fluid(
     ui.tags.head(
-        ui.tags.link(
-            rel="preconnect",
-            href="https://fonts.googleapis.com",
-        ),
-        ui.tags.link(
-            rel="preconnect",
-            href="https://fonts.gstatic.com",
-            crossorigin="anonymous",
-        ),
-        ui.tags.link(
-            rel="stylesheet",
-            href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600;1,9..144,500&family=Outfit:wght@400;500;600;700&family=Space+Grotesk:wght@600;700&display=swap",
-        ),
-        ui.tags.meta(name="theme-color", content="#07060d"),
+        ui.tags.meta(name="viewport", content="width=device-width, initial-scale=1"),
+        ui.tags.meta(name="theme-color", content="#141617"),
         ui.tags.meta(name="color-scheme", content="dark"),
         ui.tags.title("Sona — Local Voice Studio"),
         ui.tags.link(rel="stylesheet", href="sona.css"),
@@ -295,7 +285,7 @@ app_ui = ui.page_fluid(
                 };
 
                 window.sonaSetSpeed = function(btn, rate) {
-                    const player = btn.closest('.result-player');
+                    const player = btn.closest('.output-surface');
                     const audio = player ? player.querySelector('audio') : null;
                     if (audio) audio.playbackRate = rate;
                     const group = btn.closest('.speed-control-group');
@@ -304,6 +294,19 @@ app_ui = ui.page_fluid(
                     }
                     btn.classList.add('active');
                 };
+
+                document.addEventListener('DOMContentLoaded', function() {
+                    const preview = document.getElementById('reference_preview');
+                    if (!preview) return;
+                    let previousSource = null;
+                    new MutationObserver(function() {
+                        const source = preview.querySelector('audio')?.getAttribute('src') || null;
+                        if (source !== previousSource) {
+                            document.getElementById('voice-setup').open = !source;
+                            previousSource = source;
+                        }
+                    }).observe(preview, { childList: true, subtree: true });
+                });
 
                 document.addEventListener('keydown', function(e) {
                     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
@@ -320,13 +323,6 @@ app_ui = ui.page_fluid(
     ),
     ui.div(
         {"class": "app-shell"},
-        ui.div(
-            {"class": "ambient", "aria-hidden": "true"},
-            ui.div({"class": "orb orb-mint"}),
-            ui.div({"class": "orb orb-violet"}),
-            ui.div({"class": "orb orb-amber"}),
-        ),
-        ui.div({"class": "grain", "aria-hidden": "true"}),
         ui.tags.a("Skip to script", href="#script-heading", class_="skip-link"),
         ui.tags.header(
             {"class": "app-header"},
@@ -354,12 +350,116 @@ app_ui = ui.page_fluid(
             {"class": "stage"},
             ui.div(
                 {"class": "workspace"},
+                ui.tags.aside(
+                    {"class": "reference-pane", "aria-labelledby": "reference-heading"},
+                    ui.h2(
+                        {"class": "section-title", "id": "reference-heading"},
+                        "Voice reference",
+                    ),
+                    ui.p(
+                        "Record yourself, upload a file, or pick a saved voice. "
+                        "The first 12 seconds create the voice profile.",
+                        class_="section-copy",
+                    ),
+                    ui.output_ui("reference_preview"),
+                    ui.tags.details(
+                        ui.tags.summary("Change voice", class_="voice-setup-summary"),
+                        ui.div(
+                            {"class": "ref-mode-selector"},
+                            ui.input_radio_buttons(
+                                "ref_mode",
+                                None,
+                                choices={
+                                    "record": "Record",
+                                    "upload": "Upload",
+                                    "library": "Saved voices",
+                                },
+                                selected="record",
+                                inline=True,
+                            ),
+                        ),
+                        ui.panel_conditional(
+                            "input.ref_mode === 'record'",
+                            ui.div(
+                                {"class": "record-panel"},
+                                ui.div(
+                                    {"class": "voice-name-field"},
+                                    ui.input_text(
+                                        "voice_name",
+                                        "Voice name",
+                                        placeholder="e.g. my-voice",
+                                        width="100%",
+                                    ),
+                                ),
+                                ui.div(
+                                    {"class": "template-options"},
+                                    ui.input_radio_buttons(
+                                        "record_template",
+                                        "Recording template",
+                                        choices={
+                                            "standard": "Standard",
+                                            "conversational": "Conversational",
+                                        },
+                                        selected="standard",
+                                        inline=True,
+                                    ),
+                                ),
+                                ui.div(
+                                    {"class": "record-prompt-caption"},
+                                    "Read this aloud at a natural pace:",
+                                ),
+                                ui.output_ui("recording_prompt_display"),
+                                ui.div(
+                                    {"class": "record-controls"},
+                                    ui.tags.button(
+                                        {"id": "btn-record", "type": "button", "class": "btn-record", "data-max-duration": str(MAX_RECORDING_SECONDS), "onclick": "sonaToggleRecording()"},
+                                        " Start recording",
+                                    ),
+                                    ui.div(
+                                        {"id": "record-vu-meter", "class": "record-vu-meter", "aria-label": "Audio level"},
+                                        ui.tags.span({"class": "vu-bar"}),
+                                        ui.tags.span({"class": "vu-bar"}),
+                                        ui.tags.span({"class": "vu-bar"}),
+                                        ui.tags.span({"class": "vu-bar"}),
+                                        ui.tags.span({"class": "vu-bar"}),
+                                    ),
+                                    ui.tags.span({"id": "record-timer", "class": "record-timer"}, "0:00"),
+                                ),
+                                ui.div(
+                                    {"class": "record-progress-track"},
+                                    ui.div({"id": "record-progress-fill", "class": "record-progress-fill"}),
+                                ),
+                                ui.tags.div({"id": "record-status", "class": "record-status"}, "Ready"),
+                            ),
+                        ),
+                        ui.panel_conditional(
+                            "input.ref_mode === 'upload'",
+                            ui.div(
+                                {"class": "reference-upload"},
+                                ui.input_file(
+                                    "audio_file",
+                                    "Choose a WAV, MP3, OGG, FLAC, or M4A file",
+                                    accept=[".wav", ".mp3", ".ogg", ".flac", ".m4a"],
+                                    multiple=False,
+                                ),
+                            ),
+                        ),
+                        ui.panel_conditional(
+                            "input.ref_mode === 'library'",
+                            ui.div(
+                                {"class": "library-panel"},
+                                ui.output_ui("library_selector"),
+                            ),
+                        ),
+                        id="voice-setup", open=True,
+                    ),
+                    ui.output_ui("reference_transcript_section"),
+                ),
                 ui.tags.section(
                     {"class": "script-pane", "aria-labelledby": "script-heading"},
                     ui.h2(
                         {"class": "section-title", "id": "script-heading"},
-                        ui.span({"class": "step-num"}, "01"),
-                        "Script",
+                            "Script",
                     ),
                     ui.p(
                         "Enter the text you want to synthesize with your cloned voice.",
@@ -381,13 +481,13 @@ app_ui = ui.page_fluid(
                     ui.div(
                         {"class": "delivery-controls"},
                         ui.div(
-                            {"class": "quality-options"},
+                            {"class": "quality-options", "title": "Qwen3-TTS 1.7B: High fidelity uses BF16 precision. Fast draft uses the smaller 8-bit model."},
                             ui.input_radio_buttons(
                                 "quality",
                                 "Model quality",
                                 choices={
-                                    "high": "High fidelity · BF16",
-                                    "fast": "Fast draft · 8-bit",
+                                    "high": "High fidelity",
+                                    "fast": "Fast draft",
                                 },
                                 selected="high",
                                 inline=True,
@@ -412,132 +512,30 @@ app_ui = ui.page_fluid(
                             selected="auto",
                         ),
                     ),
-                ),
-                ui.tags.aside(
-                    {"class": "reference-pane", "aria-labelledby": "reference-heading"},
-                    ui.h2(
-                        {"class": "section-title", "id": "reference-heading"},
-                        ui.span({"class": "step-num"}, "02"),
-                        "Voice reference",
-                    ),
-                    ui.p(
-                        "Record yourself, upload a file, or pick a saved voice. "
-                        "The first 12 seconds create the voice profile.",
-                        class_="section-copy",
-                    ),
-                    ui.div(
-                        {"class": "ref-mode-selector"},
-                        ui.input_radio_buttons(
-                            "ref_mode",
-                            None,
-                            choices={
-                                "record": "Record",
-                                "upload": "Upload",
-                                "library": "Saved voices",
-                            },
-                            selected="record",
-                            inline=True,
-                        ),
-                    ),
-                    ui.panel_conditional(
-                        "input.ref_mode === 'record'",
+                    ui.tags.section(
+                        {"class": "transport", "aria-label": "Audio generation progress"},
                         ui.div(
-                            {"class": "record-panel"},
-                            ui.div(
-                                {"class": "voice-name-field"},
-                                ui.input_text(
-                                    "voice_name",
-                                    "Voice name",
-                                    placeholder="e.g. my-voice",
-                                    width="100%",
+                            {"class": "transport-actions"},
+                            ui.input_action_button(
+                                "btn_generate",
+                                ui.TagList(
+                                    icon_svg("wave-square"),
+                                    "Create audio",
+                                    ui.span("⌘↵", class_="kbd-shortcut"),
                                 ),
+                                class_="btn-create w-100",
                             ),
-                            ui.div(
-                                {"class": "template-options"},
-                                ui.input_radio_buttons(
-                                    "record_template",
-                                    "Recording template",
-                                    choices={
-                                        "standard": "Standard",
-                                        "conversational": "Conversational",
-                                    },
-                                    selected="standard",
-                                    inline=True,
-                                ),
+                            ui.input_action_button(
+                                "btn_cancel",
+                                "Cancel generation",
+                                class_="btn btn-outline-secondary btn-cancel w-100",
+                                disabled=True,
                             ),
-                            ui.div(
-                                {"class": "record-prompt-caption"},
-                                "Read this aloud at a natural pace:",
-                            ),
-                            ui.output_ui("recording_prompt_display"),
-                            ui.div(
-                                {"class": "record-controls"},
-                                ui.tags.button(
-                                    {"id": "btn-record", "type": "button", "class": "btn-record", "data-max-duration": str(MAX_RECORDING_SECONDS), "onclick": "sonaToggleRecording()"},
-                                    " Start recording",
-                                ),
-                                ui.div(
-                                    {"id": "record-vu-meter", "class": "record-vu-meter", "aria-label": "Audio level"},
-                                    ui.tags.span({"class": "vu-bar"}),
-                                    ui.tags.span({"class": "vu-bar"}),
-                                    ui.tags.span({"class": "vu-bar"}),
-                                    ui.tags.span({"class": "vu-bar"}),
-                                    ui.tags.span({"class": "vu-bar"}),
-                                ),
-                                ui.tags.span({"id": "record-timer", "class": "record-timer"}, "0:00"),
-                            ),
-                            ui.div(
-                                {"class": "record-progress-track"},
-                                ui.div({"id": "record-progress-fill", "class": "record-progress-fill"}),
-                            ),
-                            ui.tags.div({"id": "record-status", "class": "record-status"}, "Ready"),
+                            ui.output_text("speech_duration", inline=True),
                         ),
+                        ui.output_ui("generation_progress"),
                     ),
-                    ui.panel_conditional(
-                        "input.ref_mode === 'upload'",
-                        ui.div(
-                            {"class": "reference-upload"},
-                            ui.input_file(
-                                "audio_file",
-                                "Choose a WAV, MP3, OGG, FLAC, or M4A file",
-                                accept=[".wav", ".mp3", ".ogg", ".flac", ".m4a"],
-                                multiple=False,
-                            ),
-                        ),
-                    ),
-                    ui.panel_conditional(
-                        "input.ref_mode === 'library'",
-                        ui.div(
-                            {"class": "library-panel"},
-                            ui.output_ui("library_selector"),
-                        ),
-                    ),
-                    ui.output_ui("reference_preview"),
-                    ui.output_ui("reference_transcript_section"),
                 ),
-            ),
-            ui.tags.section(
-                {"class": "transport", "aria-label": "Audio generation progress"},
-                ui.div(
-                    {"class": "transport-actions"},
-                    ui.input_action_button(
-                        "btn_generate",
-                        ui.TagList(
-                            icon_svg("wave-square"),
-                            "Create audio",
-                            ui.span("⌘↵", class_="kbd-shortcut"),
-                        ),
-                        class_="btn-create w-100",
-                    ),
-                    ui.input_action_button(
-                        "btn_cancel",
-                        "Cancel generation",
-                        class_="btn btn-outline-secondary btn-cancel w-100",
-                        disabled=True,
-                    ),
-                    ui.p("Runs locally with Qwen3-TTS 1.7B and Apple MLX.", class_="action-caption"),
-                ),
-                ui.output_ui("generation_progress"),
             ),
             ui.tags.section(
                 {"class": "output-pane", "aria-labelledby": "output-heading"},
@@ -770,10 +768,15 @@ def server(input, output, session):
         quality = input.quality() if input.quality() else "high"
         label = "BF16" if quality == "high" else "8-bit"
         return ui.div(
-            {"class": "engine-pill"},
+            {"class": "engine-pill", "title": f"{ENGINE_NAME} · {label} · Apple MLX"},
             icon_svg("microchip"),
-            f"{ENGINE_NAME} · {label} · Apple MLX",
+            "Local engine",
         )
+
+    @render.text
+    def speech_duration():
+        seconds = estimate_speech_duration_seconds(input.speech_text() or "")
+        return f"~{seconds:.0f}s estimated audio" if seconds else "Add a script to begin"
 
     @render.text
     def character_count():
@@ -781,7 +784,7 @@ def server(input, output, session):
         chars = len(text)
         est = estimate_speech_duration_seconds(text)
         if est > 0:
-            return f"{chars:,} / 5,000 chars · ~{est:.0f}s speech"
+            return f"{chars:,} / 5,000 characters"
         return f"{chars:,} / 5,000 chars"
 
     @render.ui
@@ -1022,8 +1025,9 @@ def server(input, output, session):
             )
             action_buttons = []
 
-        return ui.div(
-            {"class": "transcript-card"},
+        return ui.tags.details(
+            {"class": "transcript-card", "open": status == "error"},
+            ui.tags.summary("Review reference transcript"),
             ui.div(
                 {"class": "transcript-card-header"},
                 ui.div(
@@ -1131,6 +1135,8 @@ def server(input, output, session):
     @render.ui
     def generation_progress():
         status = run_synthesis.status()
+        if status not in {"running", "error"}:
+            return None
         stage = generation_stage()
         snapshot = progress_snapshot(stage, status)
         active_index = next((index for index, item in enumerate(snapshot) if item.state in {"active", "error"}), 0)
@@ -1228,6 +1234,18 @@ def server(input, output, session):
         with open(wav_path, "rb") as wav_file:
             b64_wav = base64.b64encode(wav_file.read()).decode("utf-8")
 
+        samples, sample_rate = sf.read(wav_path, dtype="float32", always_2d=True)
+        amplitudes = np.max(np.abs(samples), axis=1)
+        peaks = [float(chunk.max()) if len(chunk) else 0.0 for chunk in np.array_split(amplitudes, 100)]
+        maximum = max(max(peaks), 1e-9)
+        bars = "".join(
+            f'<rect x="{index * 6}" y="{32 - max(1, peak / maximum * 30):.2f}" '
+            f'width="3" height="{max(2, peak / maximum * 60):.2f}" rx="1.5" />'
+            for index, peak in enumerate(peaks)
+        )
+        waveform = ui.HTML(f'<svg viewBox="0 0 600 64" preserveAspectRatio="none" aria-hidden="true">{bars}</svg>')
+        duration = len(samples) / sample_rate
+
         buttons = [
             ui.tags.a(
                 icon_svg("download"),
@@ -1252,6 +1270,8 @@ def server(input, output, session):
 
         return ui.div(
             {"class": "output-surface"},
+            ui.div(ui.strong("Your voice, rendered"), ui.span(f"{duration:.1f}s", class_="audio-duration"), class_="result-title"),
+            ui.div(waveform, class_="audio-waveform"),
             ui.div(
                 {"class": "result-player"},
                 ui.tags.audio(
