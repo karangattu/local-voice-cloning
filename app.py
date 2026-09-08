@@ -1,8 +1,11 @@
 import asyncio
 import base64
+import inspect
 import mimetypes
+import os
 import re
 import shutil
+import sys
 import tempfile
 import time
 import uuid
@@ -12,7 +15,48 @@ import numpy as np
 import shinyswatch
 import soundfile as sf
 from faicons import icon_svg
-from shiny import App, reactive, render, ui
+from shiny import App, _utils, reactive, render, ui
+
+
+def _configure_shiny_port(
+    config: object | None = None,
+    argv: list[str] | None = None,
+    environ: dict[str, str] | None = None,
+) -> int | None:
+    try:
+        args = sys.argv if argv is None else argv
+        has_explicit_port = any(
+            arg in ("-p", "--port") or arg.startswith(("--port=", "-p="))
+            for arg in args
+        )
+        if has_explicit_port:
+            return None
+
+        env = os.environ if environ is None else environ
+        env_port = env.get("SHINY_PORT") or env.get("PORT")
+
+        cfg = config
+        if cfg is None:
+            for frame_info in inspect.stack():
+                locals_dict = frame_info.frame.f_locals
+                if "config" in locals_dict:
+                    candidate = locals_dict["config"]
+                    if getattr(candidate, "port", None) == 8000:
+                        cfg = candidate
+                        break
+
+        if cfg is not None and getattr(cfg, "port", None) == 8000:
+            if env_port and env_port.isdigit() and int(env_port) > 0:
+                cfg.port = int(env_port)
+            else:
+                cfg.port = _utils.random_port(host=getattr(cfg, "host", "127.0.0.1"))
+            return cfg.port
+    except (AttributeError, LookupError, OSError, RuntimeError, ValueError):
+        return None
+    return None
+
+
+_configure_shiny_port()
 
 from src.audio_utils import (
     analyze_reference_audio,
@@ -1309,4 +1353,29 @@ def server(input, output, session):
 
 
 app = App(app_ui, server, static_assets=Path(__file__).parent / "www")
+
+
+def main() -> None:
+    import argparse
+
+    from shiny import run_app
+
+    parser = argparse.ArgumentParser(description="Start Sona Shiny app on a random or specified port")
+    parser.add_argument("--port", "-p", type=int, default=0, help="Port to listen on (default: 0 for random port)")
+    parser.add_argument("--host", "-H", type=str, default="127.0.0.1", help="Host address (default: 127.0.0.1)")
+    parser.add_argument("--reload", "-r", action="store_true", help="Enable auto-reload")
+    parser.add_argument("--launch-browser", "-b", action="store_true", help="Launch browser on start")
+    args, _ = parser.parse_known_args()
+
+    run_app(
+        "app:app",
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+        launch_browser=args.launch_browser,
+    )
+
+
+if __name__ == "__main__":
+    main()
 

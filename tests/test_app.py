@@ -306,3 +306,73 @@ def test_ui_contains_keyboard_shortcut_listener():
     assert "sonaSetSpeed" in rendered
     assert "kbd-shortcut" in rendered
     assert "⌘↵" in rendered
+
+
+def test_configure_shiny_port_randomizes_default_port():
+    cfg = SimpleNamespace(port=8000, host="127.0.0.1")
+    new_port = app_module._configure_shiny_port(config=cfg, argv=["app.py"], environ={})
+    assert isinstance(new_port, int)
+    assert new_port != 8000
+    assert cfg.port == new_port
+
+
+def test_configure_shiny_port_preserves_explicit_cli_args():
+    for flag in ["--port", "-p"]:
+        cfg = SimpleNamespace(port=8000, host="127.0.0.1")
+        assert app_module._configure_shiny_port(config=cfg, argv=["shiny", "run", flag, "8080", "app.py"]) is None
+        assert cfg.port == 8000
+
+    for flag_val in ["--port=8080", "-p=8080"]:
+        cfg = SimpleNamespace(port=8000, host="127.0.0.1")
+        assert app_module._configure_shiny_port(config=cfg, argv=["shiny", "run", flag_val, "app.py"]) is None
+        assert cfg.port == 8000
+
+
+def test_configure_shiny_port_respects_env_var():
+    cfg = SimpleNamespace(port=8000, host="127.0.0.1")
+    res = app_module._configure_shiny_port(config=cfg, argv=["app.py"], environ={"PORT": "9090"})
+    assert res == 9090
+    assert cfg.port == 9090
+
+    cfg2 = SimpleNamespace(port=8000, host="127.0.0.1")
+    res2 = app_module._configure_shiny_port(config=cfg2, argv=["app.py"], environ={"SHINY_PORT": "9095"})
+    assert res2 == 9095
+    assert cfg2.port == 9095
+
+
+def test_configure_shiny_port_leaves_non_default_ports():
+    cfg = SimpleNamespace(port=54321, host="127.0.0.1")
+    assert app_module._configure_shiny_port(config=cfg, argv=["app.py"], environ={}) is None
+    assert cfg.port == 54321
+
+
+def test_main_runs_with_random_port_by_default(monkeypatch):
+    run_calls = []
+
+    def mock_run_app(app_target, **kwargs):
+        run_calls.append((app_target, kwargs))
+
+    import shiny
+    monkeypatch.setattr(shiny, "run_app", mock_run_app)
+    monkeypatch.setattr("sys.argv", ["app.py"])
+
+    app_module.main()
+    assert len(run_calls) == 1
+    assert run_calls[0][0] == "app:app"
+    assert run_calls[0][1]["port"] == 0
+
+
+def test_main_forwards_explicit_port(monkeypatch):
+    run_calls = []
+
+    def mock_run_app(app_target, **kwargs):
+        run_calls.append((app_target, kwargs))
+
+    import shiny
+    monkeypatch.setattr(shiny, "run_app", mock_run_app)
+    monkeypatch.setattr("sys.argv", ["app.py", "--port", "9876"])
+
+    app_module.main()
+    assert len(run_calls) == 1
+    assert run_calls[0][1]["port"] == 9876
+

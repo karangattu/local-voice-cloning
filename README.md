@@ -71,7 +71,7 @@ Start Sona:
 uv run shiny run app.py
 ```
 
-Open [http://127.0.0.1:8000](http://127.0.0.1:8000), then:
+Open the URL printed in the terminal (e.g. http://127.0.0.1:<port>), then:
 
 1. Record yourself, upload a file, or pick a saved voice.
 2. Review the auto-generated reference transcript and correct any wrong words.
