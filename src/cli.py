@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 from src.audio_utils import save_audio
-from src.cloner import SUPPORTED_LANGUAGES, LocalVoiceCloner
+from src.cloner import ENGINES, SUPPORTED_LANGUAGES, LocalVoiceCloner
 
 
 def parse_args(args=None):
@@ -51,15 +51,15 @@ def parse_args(args=None):
         default=1.0,
         help=argparse.SUPPRESS,
     )
+    parser.add_argument("--engine", choices=ENGINES, default="qwen")
     parser.add_argument(
         "--quality",
         choices=["high", "fast"],
         default="high",
-        help="Qwen model quality: high uses BF16; fast uses an 8-bit checkpoint.",
+        help="Quality: Qwen BF16/8-bit; OmniVoice 32/16 diffusion steps.",
     )
     parser.add_argument(
         "--language",
-        choices=SUPPORTED_LANGUAGES,
         default="auto",
         help="Output language (default: auto).",
     )
@@ -75,7 +75,10 @@ def parse_args(args=None):
         default=None,
         help=argparse.SUPPRESS,
     )
-    return parser.parse_args(args)
+    parsed = parser.parse_args(args)
+    if parsed.engine == "qwen" and parsed.language not in SUPPORTED_LANGUAGES:
+        parser.error(f"Unsupported Qwen language: {parsed.language}")
+    return parsed
 
 
 def main():
@@ -86,8 +89,8 @@ def main():
         sys.exit(1)
 
     print(f"Loading reference voice from {ref_path}...")
-    cloner = LocalVoiceCloner(quality=args.quality)
-    print(f"Synthesizing with Qwen3-TTS 1.7B ({args.quality}) on Apple MLX...")
+    cloner = LocalVoiceCloner(quality=args.quality, engine=args.engine)
+    print(f"Synthesizing with {cloner.engine_name} ({args.quality}) on {cloner.device}...")
     result = cloner.clone_voice(
         reference_audio_path=ref_path,
         text=args.text,

@@ -21,7 +21,7 @@ from src.audio_utils import (
     save_audio,
     trim_silence,
 )
-from src.cloner import ENGINE_NAME, get_shared_cloner
+from src.cloner import ENGINE_NAME, ENGINES, get_shared_cloner
 from src.progress import progress_snapshot, run_with_progress
 
 VOICE_SAMPLES_DIR = Path(__file__).parent / "voice_samples"
@@ -478,10 +478,19 @@ app_ui = ui.page_fluid(
                         ui.span("Natural punctuation helps shape the delivery."),
                         ui.output_text("character_count", inline=True),
                     ),
+                    ui.input_select("engine", "Voice engine", choices=ENGINES, selected="qwen"),
+                    ui.panel_conditional(
+                        "input.engine === 'omnivoice'",
+                        ui.p("OmniVoice supports 600+ languages. The first use downloads its voice model. "
+                             "High fidelity uses 32 steps; Fast draft uses 16. "
+                             "Use a 3–10 second reference for best results."),
+                        ui.input_text("omni_language", "Output language (name or code)",
+                                      value="auto", placeholder="auto, Hindi, ar, …"),
+                    ),
                     ui.div(
                         {"class": "delivery-controls"},
                         ui.div(
-                            {"class": "quality-options", "title": "Qwen3-TTS 1.7B: High fidelity uses BF16 precision. Fast draft uses the smaller 8-bit model."},
+                            {"class": "quality-options", "title": "High fidelity prioritizes quality. Fast draft uses a smaller Qwen model or fewer OmniVoice generation steps."},
                             ui.input_radio_buttons(
                                 "quality",
                                 "Model quality",
@@ -493,7 +502,7 @@ app_ui = ui.page_fluid(
                                 inline=True,
                             ),
                         ),
-                        ui.input_select(
+                        ui.panel_conditional("input.engine === 'qwen'", ui.input_select(
                             "language",
                             "Output language",
                             choices={
@@ -510,7 +519,7 @@ app_ui = ui.page_fluid(
                                 "Russian": "Russian",
                             },
                             selected="auto",
-                        ),
+                        )),
                     ),
                     ui.tags.section(
                         {"class": "transport", "aria-label": "Audio generation progress"},
@@ -766,9 +775,13 @@ def server(input, output, session):
     @render.ui
     def engine_badge():
         quality = input.quality() if input.quality() else "high"
+        engine = input.engine() or "qwen"
         label = "BF16" if quality == "high" else "8-bit"
+        title = f"{ENGINE_NAME} · {label} · Apple MLX"
+        if engine == "omnivoice":
+            title = f"OmniVoice · {32 if quality == 'high' else 16} steps · PyTorch"
         return ui.div(
-            {"class": "engine-pill", "title": f"{ENGINE_NAME} · {label} · Apple MLX"},
+            {"class": "engine-pill", "title": title},
             icon_svg("microchip"),
             "Local engine",
         )
@@ -1064,9 +1077,10 @@ def server(input, output, session):
         ref_text: str,
         quality: str,
         language: str,
+        engine: str,
     ):
         def work(report):
-            return get_shared_cloner(quality).clone_voice(
+            return get_shared_cloner(quality, engine=engine).clone_voice(
                 reference_audio_path=ref_path,
                 text=text,
                 reference_text=ref_text,
@@ -1098,7 +1112,9 @@ def server(input, output, session):
             text,
             ref_text,
             input.quality() or "high",
-            input.language() or "auto",
+            (input.omni_language() if input.engine() == "omnivoice"
+             else input.language()) or "auto",
+            input.engine() or "qwen",
         )
 
     @reactive.effect
@@ -1293,3 +1309,4 @@ def server(input, output, session):
 
 
 app = App(app_ui, server, static_assets=Path(__file__).parent / "www")
+

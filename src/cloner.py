@@ -1,8 +1,10 @@
+import os
 import tempfile
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -13,6 +15,8 @@ from src.audio_utils import enhance_audio, load_audio
 MAX_REFERENCE_SECONDS = 12.0
 LINE_BREAK_PAUSE_SECONDS = 0.4
 ENGINE_NAME = "Qwen3-TTS 1.7B"
+ENGINES = {"qwen": ENGINE_NAME, "omnivoice": "OmniVoice"}
+OMNIVOICE_MODEL_ID = "k2-fsa/OmniVoice"
 ASR_MODEL_ID = "mlx-community/whisper-large-v3-turbo-asr-fp16"
 MODEL_VARIANTS = {
     "high": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",
@@ -38,6 +42,40 @@ def _load_tts_model(model_id: str):
     from mlx_audio.tts.utils import load_model
 
     return load_model(model_id)
+
+
+def _load_omnivoice_model(model_id: str):
+    try:
+        from omnivoice import OmniVoice
+    except ImportError as exc:
+        raise RuntimeError(
+            "OmniVoice is not installed. Run: uv sync --extra omnivoice"
+        ) from exc
+    import torch
+
+    device = omnivoice_device()
+    if device == "mps":
+        # Parallel weight conversion can crash PyTorch Metal kernels (Transformers #48029).
+        os.environ["HF_DEACTIVATE_ASYNC_LOAD"] = "1"
+    return OmniVoice.from_pretrained(
+        model_id, device_map=device,
+        dtype=torch.float32 if device == "cpu" else torch.float16,
+    )
+
+
+def omnivoice_device() -> str:
+    import torch
+
+    if torch.cuda.is_available():
+        return "cuda:0"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def validate_engine(engine: str) -> None:
+    if engine not in ENGINES:
+        raise ValueError(f"Unknown engine '{engine}'. Choose qwen or omnivoice.")
 
 
 def _load_stt_model(model_id: str):
@@ -99,13 +137,20 @@ class LocalVoiceCloner:
         sample_rate: int = 24000,
         tts_loader: Callable[[str], Any] | None = None,
         stt_loader: Callable[[str], Any] | None = None,
+        engine: str = "qwen",
     ) -> None:
+        validate_engine(engine)
+        self.engine = engine
         self.quality = quality
         self.model_id = model_id_for_quality(quality)
+        if engine == "omnivoice":
+            self.model_id = OMNIVOICE_MODEL_ID
         self.sample_rate = sample_rate
-        self.device = detect_device()
-        self.engine_name = ENGINE_NAME
-        self._tts_loader = tts_loader or _load_tts_model
+        self.device = detect_device() if engine == "qwen" else omnivoice_device()
+        self.engine_name = ENGINES[engine]
+        self._tts_loader = tts_loader or (
+            _load_tts_model if engine == "qwen" else _load_omnivoice_model
+        )
         self._stt_loader = stt_loader or _load_stt_model
         self._tts_model: Any | None = None
         self._stt_model: Any | None = None
@@ -121,7 +166,9 @@ class LocalVoiceCloner:
                 if self._tts_model is None:
                     self._tts_model = self._tts_loader(self.model_id)
                     self.sample_rate = int(
-                        getattr(self._tts_model, "sample_rate", self.sample_rate)
+                        getattr(self._tts_model, "sampling_rate", self.sample_rate)
+                        if self.engine == "omnivoice"
+                        else getattr(self._tts_model, "sample_rate", self.sample_rate)
                     )
         return self._tts_model
 
@@ -201,17 +248,31 @@ class LocalVoiceCloner:
             sample_rate = self.sample_rate
             pieces: list[np.ndarray] = []
             for segment, newline_count in _script_segments(text):
-                generations = list(
-                    tts_model.generate(
+                if self.engine == "omnivoice":
+                    audio = tts_model.generate(
                         text=segment,
                         ref_audio=str(canonical_ref_path),
                         ref_text=transcript,
                         speed=speed,
-                        lang_code=language,
-                        stream=False,
-                        verbose=False,
+                        language=None if language == "auto" else language,
+                        num_step=32 if self.quality == "high" else 16,
                     )
-                )
+                    generations = [
+                        SimpleNamespace(audio=piece, sample_rate=self.sample_rate)
+                        for piece in audio
+                    ]
+                else:
+                    generations = list(
+                        tts_model.generate(
+                            text=segment,
+                            ref_audio=str(canonical_ref_path),
+                            ref_text=transcript,
+                            speed=speed,
+                            lang_code=language,
+                            stream=False,
+                            verbose=False,
+                        )
+                    )
                 if not generations:
                     raise RuntimeError("The voice model returned no audio.")
 
@@ -239,24 +300,26 @@ class LocalVoiceCloner:
             audio=enhanced,
             sample_rate=sample_rate,
             duration_seconds=float(len(enhanced) / sample_rate),
-            matched_voice=f"{ENGINE_NAME} · {quality_label}",
+            matched_voice=f"{self.engine_name} · {quality_label}",
         )
 
 
-_shared_cloners: dict[str, LocalVoiceCloner] = {}
+_shared_cloners: dict[tuple[str, str], LocalVoiceCloner] = {}
 _shared_cloner_lock = threading.Lock()
 
 
-def get_shared_cloner(quality: str = "high") -> LocalVoiceCloner:
-    if quality not in _shared_cloners:
-        with _shared_cloner_lock:
-            if quality not in _shared_cloners:
-                _shared_cloners[quality] = LocalVoiceCloner(quality=quality)
-    return _shared_cloners[quality]
+def get_shared_cloner(quality: str = "high", engine: str = "qwen") -> LocalVoiceCloner:
+    validate_engine(engine)
+    model_id_for_quality(quality)
+    key = (engine, quality)
+    with _shared_cloner_lock:
+        if key not in _shared_cloners:
+            _shared_cloners[key] = LocalVoiceCloner(quality=quality, engine=engine)
+        return _shared_cloners[key]
 
 
-def is_shared_cloner_loaded(quality: str | None = None) -> bool:
+def is_shared_cloner_loaded(quality: str | None = None, engine: str = "qwen") -> bool:
     if quality is not None:
-        cloner = _shared_cloners.get(quality)
+        cloner = _shared_cloners.get((engine, quality))
         return bool(cloner and cloner.model_loaded)
     return any(cloner.model_loaded for cloner in _shared_cloners.values())

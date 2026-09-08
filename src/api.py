@@ -21,12 +21,14 @@ from fastapi.responses import Response
 from src.audio_utils import SUPPORTED_OUTPUT_FORMATS, save_audio
 from src.cloner import (
     ENGINE_NAME,
+    ENGINES,
     MODEL_VARIANTS,
     SUPPORTED_LANGUAGES,
     detect_device,
     get_shared_cloner,
     is_shared_cloner_loaded,
     model_id_for_quality,
+    validate_engine,
 )
 
 MEDIA_TYPES = {"wav": "audio/wav", "mp3": "audio/mpeg"}
@@ -34,7 +36,7 @@ MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
 app = FastAPI(
     title="Local Voice Cloning API",
-    description="Zero-shot voice cloning with Qwen3-TTS on Apple MLX. Upload a reference voice "
+    description="Local voice cloning with Qwen3-TTS or optional OmniVoice. Upload a reference voice "
     "sample and text; receive synthesized speech as WAV or MP3.",
     version="2.0.0",
 )
@@ -53,6 +55,9 @@ def info():
     """Report engine defaults without forcing either model checkpoint to load."""
     return {
         "engine": ENGINE_NAME,
+        "engines": ENGINES,
+        "omnivoice": {"model": "k2-fsa/OmniVoice", "quality_steps": {"high": 32, "fast": 16},
+                      "languages": "600+; use a language name, code, or auto"},
         "device": detect_device(),
         "sample_rate": 24000,
         "default_quality": "high",
@@ -68,7 +73,7 @@ async def transcribe(
     reference_audio: Annotated[UploadFile, File(description="Voice sample to transcribe (wav/mp3/ogg/flac/m4a)")],
     quality: Annotated[
         str,
-        Form(description="Model quality: high (BF16) or fast (8-bit)"),
+        Form(description="Quality: Qwen BF16/8-bit; OmniVoice 32/16 steps"),
     ] = "high",
 ):
     quality = quality.lower().strip()
@@ -114,7 +119,7 @@ async def synthesize(
     ] = 1.0,
     quality: Annotated[
         str,
-        Form(description="Model quality: high (BF16) or fast (8-bit)"),
+        Form(description="Quality: Qwen BF16/8-bit; OmniVoice 32/16 steps"),
     ] = "high",
     language: Annotated[
         str,
@@ -129,6 +134,7 @@ async def synthesize(
         Form(ge=1.0, le=4.0, description="Deprecated F5-TTS option; accepted but ignored"),
     ] = 2.0,
     output_format: Annotated[str, Form(description="Output audio format: wav or mp3")] = "wav",
+    engine: Annotated[str, Form(description="Voice engine: qwen or omnivoice")] = "qwen",
 ):
     output_format = output_format.lower().lstrip(".")
     if output_format not in SUPPORTED_OUTPUT_FORMATS:
@@ -142,7 +148,12 @@ async def synthesize(
         model_id_for_quality(quality)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    if language not in SUPPORTED_LANGUAGES:
+    engine = engine.lower().strip()
+    try:
+        validate_engine(engine)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if engine == "qwen" and language not in SUPPORTED_LANGUAGES:
         raise HTTPException(
             status_code=422,
             detail=f"Unsupported language '{language}'.",
@@ -163,7 +174,7 @@ async def synthesize(
         ref_path.write_bytes(ref_bytes)
 
         try:
-            result = get_shared_cloner(quality).clone_voice(
+            result = get_shared_cloner(quality, engine=engine).clone_voice(
                 reference_audio_path=ref_path,
                 text=text,
                 reference_text=ref_text,

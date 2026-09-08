@@ -24,6 +24,45 @@ For development (adds pytest, ruff, httpx):
 uv sync --extra dev
 ```
 
+## Optional OmniVoice engine
+
+[OmniVoice](https://github.com/k2-fsa/OmniVoice) adds voice cloning in 600+ languages.
+Qwen remains the default. Install and launch with the optional extra retained:
+
+```bash
+uv sync --extra dev --extra omnivoice
+uv run --extra omnivoice shiny run app.py
+```
+
+Select **OmniVoice** under **Voice engine**. Enter a language name or code
+(e.g. Hindi or ar), or leave `auto`. High fidelity uses 32 diffusion steps;
+Fast draft uses 16 steps with the same checkpoint. The first generation downloads
+`k2-fsa/OmniVoice` and its audio tokenizer, using additional disk space and memory.
+On Apple Silicon the speech model uses PyTorch MPS; the upstream audio tokenizer
+runs on CPU. On MPS, the app disables asynchronous Transformers weight loading
+(`HF_DEACTIVATE_ASYNC_LOAD=1`) to avoid a native crash during weight conversion.
+If an older app process stops at “Loading weights,” restart it with the updated
+code; cached downloads are reused. A missing Hugging Face token warning does not
+cause this crash. Mac performance has not been benchmarked against Qwen.
+
+Use a 3–10 second reference for best results. The app retains its shared
+12-second reference limit and MLX Whisper transcription/review workflow for both
+engines, so transcripts continue to match when switching engines. This integration
+still requires Apple Silicon. Transcription language coverage can be narrower than
+OmniVoice's synthesis coverage; provide or correct the transcript when needed.
+
+CLI example:
+
+```bash
+uv run --extra omnivoice python -m src.cli --engine omnivoice \
+  --reference voice_sample.wav --ref-text "The words in the recording." \
+  --text "Hello from OmniVoice." --language English --quality fast --output omni.wav
+```
+
+For the API, launch with `uv run --extra omnivoice uvicorn src.api:app`, then add
+`-F "engine=omnivoice"` to the synthesis request below. `/transcribe` remains the
+shared MLX Whisper service. Omit the engine field to keep using Qwen.
+
 ## Web app
 
 Start Sona:
