@@ -12,3 +12,4 @@ output.wav
 cloned_*.wav
 .claude/
 voice_samples/
+.vscode/
