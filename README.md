@@ -4,6 +4,8 @@ Clone a voice locally on your Mac using Apple MLX. Audio never leaves your compu
 
 Provide a short audio sample and text, and the app generates speech as a WAV or MP3 file.
 
+![Sona Voice Studio](docs/app-screenshot.png)
+
 ## Requirements
 
 - Apple Silicon Mac (M-series)
