@@ -16,6 +16,7 @@ import shinyswatch
 import soundfile as sf
 from faicons import icon_svg
 from shiny import App, _utils, reactive, render, ui
+from starlette.responses import FileResponse
 
 
 def _configure_shiny_port(
@@ -77,6 +78,7 @@ RECORDING_TEMPLATES = {
 }
 RECORDING_PROMPT = RECORDING_TEMPLATES["standard"]
 MAX_RECORDING_SECONDS = 30
+MAX_SCRIPT_CHARACTERS = 5000
 
 app_ui = ui.page_fluid(
     ui.tags.head(
@@ -96,6 +98,9 @@ app_ui = ui.page_fluid(
                 let animationFrameId = null;
                 let mediaStream = null;
                 let isRecording = false;
+                let isProcessing = false;
+                let vuData = null;
+                let vuBars = [];
                 let timerId = null;
                 let maxDurationTimerId = null;
                 let startTime = 0;
@@ -127,13 +132,12 @@ app_ui = ui.page_fluid(
 
                 function updateVU() {
                     if (!analyserNode || !isRecording) return;
-                    const dataArray = new Uint8Array(analyserNode.frequencyBinCount);
+                    const dataArray = vuData;
                     analyserNode.getByteFrequencyData(dataArray);
                     let sum = 0;
                     for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
                     const avg = sum / dataArray.length;
                     const normalized = Math.min(1, avg / 70);
-                    const vuBars = document.querySelectorAll('#record-vu-meter .vu-bar');
                     vuBars.forEach(function(bar, index) {
                         const threshold = (index + 1) / (vuBars.length + 1);
                         if (normalized >= threshold) {
@@ -212,6 +216,7 @@ app_ui = ui.page_fluid(
                 }
 
                 window.sonaToggleRecording = function() {
+                    if (isProcessing) return;
                     if (isRecording) {
                         sonaStopRecording();
                     } else {
@@ -232,6 +237,8 @@ app_ui = ui.page_fluid(
                         setStatus('Recording is not supported in this browser.');
                         return;
                     }
+                    isProcessing = true;
+                    document.getElementById("btn-record").disabled = true;
                     navigator.mediaDevices.getUserMedia({ audio: true })
                         .then(function(stream) {
                             mediaStream = stream;
@@ -239,6 +246,8 @@ app_ui = ui.page_fluid(
                             const source = audioContext.createMediaStreamSource(stream);
                             analyserNode = audioContext.createAnalyser();
                             analyserNode.fftSize = 64;
+                            vuData = new Uint8Array(analyserNode.frequencyBinCount);
+                            vuBars = document.querySelectorAll("#record-vu-meter .vu-bar");
                             source.connect(analyserNode);
 
                             mediaRecorder = new MediaRecorder(stream);
@@ -267,10 +276,14 @@ app_ui = ui.page_fluid(
                                     if (mediaStream) mediaStream.getTracks().forEach(function(t) { t.stop(); });
                                     if (audioContext) { audioContext.close(); audioContext = null; }
                                     analyserNode = null;
+                                    isProcessing = false;
+                                    document.getElementById("btn-record").disabled = false;
                                 });
                             };
                             mediaRecorder.start();
                             isRecording = true;
+                            isProcessing = false;
+                            document.getElementById("btn-record").disabled = false;
                             startTime = Date.now();
                             setButtonState(true);
                             setStatus('Recording...');
@@ -285,7 +298,11 @@ app_ui = ui.page_fluid(
                             }, maxDuration * 1000);
                         })
                         .catch(function(err) {
-                            setStatus('Microphone access denied: ' + err.message);
+                            isProcessing = false;
+                            document.getElementById("btn-record").disabled = false;
+                            if (mediaStream) mediaStream.getTracks().forEach(function(t) { t.stop(); });
+                            if (audioContext) { audioContext.close(); audioContext = null; }
+                            setStatus("Could not start recording: " + err.message);
                             setButtonState(false);
                         });
                 }
@@ -296,6 +313,8 @@ app_ui = ui.page_fluid(
                         mediaRecorder.stop();
                     }
                     isRecording = false;
+                    isProcessing = true;
+                    document.getElementById("btn-record").disabled = true;
                     setButtonState(false);
                     if (timerId) { clearInterval(timerId); timerId = null; }
                     if (maxDurationTimerId) { clearTimeout(maxDurationTimerId); maxDurationTimerId = null; }
@@ -342,6 +361,15 @@ app_ui = ui.page_fluid(
                 document.addEventListener('DOMContentLoaded', function() {
                     const preview = document.getElementById('reference_preview');
                     if (!preview) return;
+                    const script = document.getElementById('speech_text');
+                    if (script) {
+                        script.setAttribute('aria-label', 'Script to synthesize');
+                        script.setAttribute('aria-describedby', 'character_count');
+                        script.addEventListener('input', function() {
+                            const invalid = script.value.length > 5000;
+                            script.setAttribute('aria-invalid', String(invalid));
+                        });
+                    }
                     let previousSource = null;
                     new MutationObserver(function() {
                         const source = preview.querySelector('audio')?.getAttribute('src') || null;
@@ -473,7 +501,7 @@ app_ui = ui.page_fluid(
                                     {"class": "record-progress-track"},
                                     ui.div({"id": "record-progress-fill", "class": "record-progress-fill"}),
                                 ),
-                                ui.tags.div({"id": "record-status", "class": "record-status"}, "Ready"),
+                                ui.tags.div({"id": "record-status", "class": "record-status", "role": "status"}, "Ready"),
                             ),
                         ),
                         ui.panel_conditional(
@@ -705,12 +733,55 @@ def record_user_transcript_edit(
     return new_cache
 
 
+def audio_waveform(path: Path, bins: int = 100) -> tuple[list[float], float]:
+    """Summarize audio with bounded reads, including the final partial block."""
+    if bins < 1:
+        raise ValueError("bins must be positive")
+    peaks = []
+    with sf.SoundFile(path) as audio:
+        duration = audio.frames / audio.samplerate
+        size, remainder = divmod(audio.frames, bins)
+        for index in range(bins):
+            remaining = size + (index < remainder)
+            peak = 0.0
+            while remaining:
+                block = audio.read(min(remaining, 65536), dtype="float32", always_2d=True)
+                peak = max(peak, float(np.max(np.abs(block))))
+                remaining -= len(block)
+            peaks.append(peak)
+    return peaks, duration
+
+
+def audio_file_response(
+    path: str | Path, filename: str | None = None, *, media_type: str | None = None
+):
+    """Serve audio without copying it into a reactive UI message."""
+    return FileResponse(
+        path,
+        media_type=media_type or _guess_mime_type(str(path)),
+        filename=filename,
+        content_disposition_type="attachment" if filename else "inline",
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
+def script_validation_message(text: str) -> str:
+    if not text.strip():
+        return "Write a script before creating audio."
+    if len(text) > MAX_SCRIPT_CHARACTERS:
+        excess = len(text) - MAX_SCRIPT_CHARACTERS
+        unit = "character" if excess == 1 else "characters"
+        return f"Shorten your script by {excess:,} {unit}."
+    return ""
+
+
 def server(input, output, session):
     session_dir = Path(tempfile.gettempdir()) / "local-voice-cloning" / session.id
     session_dir.mkdir(parents=True, exist_ok=True)
     session.on_ended(lambda: shutil.rmtree(session_dir, ignore_errors=True))
 
     output_audio_path = reactive.value(None)
+    output_waveform = reactive.value(None)
     generation_stage = reactive.value(None)
     generation_started_at = reactive.value(None)
     last_recorded_path = reactive.value(None)
@@ -729,11 +800,13 @@ def server(input, output, session):
             if file_infos:
                 return (file_infos[0]["datapath"], file_infos[0]["name"])
         elif mode == "record":
+            library_refresh()
             path = last_recorded_path()
-            if path:
+            if path and Path(path).exists():
                 name = last_recorded_name() or "recording"
                 return (str(path), f"{name}.wav")
         elif mode == "library":
+            library_refresh()
             selected = input.voice_library() or ""
             if selected:
                 path = _saved_voice_path(selected)
@@ -839,8 +912,9 @@ def server(input, output, session):
     def character_count():
         text = input.speech_text() or ""
         chars = len(text)
-        est = estimate_speech_duration_seconds(text)
-        if est > 0:
+        if chars > MAX_SCRIPT_CHARACTERS:
+            return script_validation_message(text)
+        if text.strip():
             return f"{chars:,} / 5,000 characters"
         return f"{chars:,} / 5,000 chars"
 
@@ -955,6 +1029,8 @@ def server(input, output, session):
             return
         audio_path = ref[0]
         ref_id = get_reference_id(audio_path)
+        if ref_id in pending_transcriptions():
+            return
         new_pending = set(pending_transcriptions())
         new_pending.add(ref_id)
         pending_transcriptions.set(new_pending)
@@ -976,9 +1052,12 @@ def server(input, output, session):
             )
 
         datapath, display_name = ref
-        mime_type = _guess_mime_type(display_name)
-        with open(datapath, "rb") as audio_file:
-            b64_audio = base64.b64encode(audio_file.read()).decode("utf-8")
+        audio_url = session.dynamic_route(
+            "reference-audio",
+            lambda request: audio_file_response(
+                datapath, media_type=_guess_mime_type(display_name)
+            ),
+        )
 
         try:
             report = analyze_reference_audio(datapath)
@@ -1007,7 +1086,7 @@ def server(input, output, session):
             ui.tags.audio(
                 controls=True,
                 preload="metadata",
-                src=f"data:{mime_type};base64,{b64_audio}",
+                src=audio_url,
             ),
             ui.div(
                 {"class": "meta-list"},
@@ -1124,26 +1203,34 @@ def server(input, output, session):
         engine: str,
     ):
         def work(report):
-            return get_shared_cloner(quality, engine=engine).clone_voice(
+            result = get_shared_cloner(quality, engine=engine).clone_voice(
                 reference_audio_path=ref_path,
                 text=text,
                 reference_text=ref_text,
                 language=language,
                 progress_callback=report,
             )
+            report("finish")
+            wav_file = session_dir / f"clone_{uuid.uuid4().hex}.wav"
+            save_audio(wav_file, result.audio, sample_rate=result.sample_rate)
+            save_audio(wav_file.with_suffix(".mp3"), result.audio, sample_rate=result.sample_rate)
+            return str(wav_file), audio_waveform(wav_file)
 
         return await run_with_progress(work, generation_stage.set)
 
     @reactive.effect
     @reactive.event(input.btn_generate)
     def handle_synthesis():
+        if run_synthesis.status() == "running":
+            return
         ref = active_reference()
-        text = input.speech_text()
+        text = input.speech_text() or ""
         if not ref:
             ui.notification_show("Add a reference recording before creating audio.", type="warning")
             return
-        if not text.strip():
-            ui.notification_show("Write a script before creating audio.", type="warning")
+        validation = script_validation_message(text)
+        if validation:
+            ui.notification_show(validation, type="warning")
             return
 
         ref_text = (input.ref_transcript() or "").strip()
@@ -1170,20 +1257,17 @@ def server(input, output, session):
     @reactive.effect
     def _toggle_buttons():
         running = run_synthesis.status() == "running"
-        ui.update_action_button("btn_generate", disabled=running)
+        invalid = bool(script_validation_message(input.speech_text() or ""))
+        ui.update_action_button("btn_generate", disabled=running or invalid or not active_reference())
         ui.update_action_button("btn_cancel", disabled=not running)
 
     @reactive.effect
     def _save_result():
         if run_synthesis.status() != "success":
             return
-        result = run_synthesis.result()
-        generation_id = uuid.uuid4().hex[:8]
-        wav_file = session_dir / f"clone_{generation_id}.wav"
-        mp3_file = session_dir / f"clone_{generation_id}.mp3"
-        save_audio(wav_file, result.audio, sample_rate=result.sample_rate)
-        save_audio(mp3_file, result.audio, sample_rate=result.sample_rate)
-        output_audio_path.set(str(wav_file))
+        path, waveform = run_synthesis.result()
+        output_waveform.set(waveform)
+        output_audio_path.set(path)
         ui.notification_show("Your cloned voice is ready.", type="message")
 
     @reactive.effect
@@ -1291,12 +1375,14 @@ def server(input, output, session):
 
         wav_path = Path(path)
         mp3_path = wav_path.with_suffix(".mp3")
-        with open(wav_path, "rb") as wav_file:
-            b64_wav = base64.b64encode(wav_file.read()).decode("utf-8")
-
-        samples, sample_rate = sf.read(wav_path, dtype="float32", always_2d=True)
-        amplitudes = np.max(np.abs(samples), axis=1)
-        peaks = [float(chunk.max()) if len(chunk) else 0.0 for chunk in np.array_split(amplitudes, 100)]
+        wav_url = session.dynamic_route(
+            "output-wav", lambda request: audio_file_response(wav_path)
+        )
+        wav_download = session.dynamic_route(
+            "download-wav",
+            lambda request: audio_file_response(wav_path, "cloned_voice_output.wav"),
+        )
+        peaks, duration = output_waveform()
         maximum = max(max(peaks), 1e-9)
         bars = "".join(
             f'<rect x="{index * 6}" y="{32 - max(1, peak / maximum * 30):.2f}" '
@@ -1304,25 +1390,26 @@ def server(input, output, session):
             for index, peak in enumerate(peaks)
         )
         waveform = ui.HTML(f'<svg viewBox="0 0 600 64" preserveAspectRatio="none" aria-hidden="true">{bars}</svg>')
-        duration = len(samples) / sample_rate
 
         buttons = [
             ui.tags.a(
                 icon_svg("download"),
                 "Download WAV",
-                href=f"data:audio/wav;base64,{b64_wav}",
+                href=wav_download,
                 download="cloned_voice_output.wav",
                 class_="btn btn-download",
             )
         ]
         if mp3_path.exists():
-            with open(mp3_path, "rb") as mp3_file:
-                b64_mp3 = base64.b64encode(mp3_file.read()).decode("utf-8")
+            mp3_download = session.dynamic_route(
+                "download-mp3",
+                lambda request: audio_file_response(mp3_path, "cloned_voice_output.mp3"),
+            )
             buttons.append(
                 ui.tags.a(
                     icon_svg("download"),
                     "Download MP3",
-                    href=f"data:audio/mpeg;base64,{b64_mp3}",
+                    href=mp3_download,
                     download="cloned_voice_output.mp3",
                     class_="btn btn-download",
                 )
@@ -1336,8 +1423,9 @@ def server(input, output, session):
                 {"class": "result-player"},
                 ui.tags.audio(
                     controls=True,
-                    autoplay=True,
-                    src=f"data:audio/wav;base64,{b64_wav}",
+                    preload="metadata",
+                    aria_label="Generated speech",
+                    src=wav_url,
                 ),
                 ui.div({"class": "download-group"}, *buttons),
             ),

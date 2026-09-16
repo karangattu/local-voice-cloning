@@ -376,3 +376,58 @@ def test_main_forwards_explicit_port(monkeypatch):
     assert len(run_calls) == 1
     assert run_calls[0][1]["port"] == 9876
 
+
+
+def test_waveform_matches_full_audio_summary(tmp_path):
+    rng = np.random.default_rng(42)
+    samples = rng.uniform(-0.9, 0.9, (140003, 2)).astype(np.float32)
+    path = tmp_path / "stereo.wav"
+    sf.write(path, samples, 24000, subtype="FLOAT")
+
+    peaks, duration = app_module.audio_waveform(path, bins=2)
+
+    expected = [float(np.abs(chunk).max()) for chunk in np.array_split(samples, 2)]
+    assert peaks == expected
+    assert duration == len(samples) / 24000
+
+
+def test_waveform_handles_short_and_silent_audio(tmp_path):
+    path = tmp_path / "short.wav"
+    sf.write(path, np.zeros(3, dtype=np.float32), 24000)
+    peaks, duration = app_module.audio_waveform(path)
+    assert peaks == [0.0] * 100
+    assert duration == 3 / 24000
+
+
+def test_audio_response_supports_playback_ranges_and_downloads(tmp_path):
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+
+    path = tmp_path / "sample.wav"
+    sf.write(path, np.zeros(240, dtype=np.float32), 24000)
+    web_app = Starlette(routes=[
+        Route("/audio", lambda request: app_module.audio_file_response(path)),
+        Route("/download", lambda request: app_module.audio_file_response(path, "voice.wav")),
+    ])
+    with TestClient(web_app) as client:
+        response = client.get("/audio", headers={"Range": "bytes=0-43"})
+        assert response.status_code == 206
+        assert response.content == path.read_bytes()[:44]
+        assert response.headers["cache-control"] == "private, no-store"
+        download = client.get("/download")
+        assert download.content == path.read_bytes()
+        assert 'attachment; filename="voice.wav"' == download.headers["content-disposition"]
+
+
+def test_script_validation_limits_and_whitespace():
+    assert app_module.script_validation_message(" \n ")
+    assert app_module.script_validation_message("a" * 5000) == ""
+    assert app_module.script_validation_message("a" * 5001) == "Shorten your script by 1 character."
+
+
+def test_uploaded_audio_preserves_mime_type_without_filename_extension(tmp_path):
+    upload = tmp_path / "upload"
+    upload.write_bytes(b"audio")
+    response = app_module.audio_file_response(upload, media_type="audio/mpeg")
+    assert response.media_type == "audio/mpeg"

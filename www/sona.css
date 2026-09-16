@@ -1120,3 +1120,23 @@ summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; }
     .field-footer { flex-wrap: wrap; }
     #speech_text { min-height: 240px; }
 }
+
+/* Accessible feedback and controls on narrow screens. */
+button:focus-visible, a:focus-visible, audio:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 3px;
+}
+button:disabled { cursor: not-allowed; opacity: .55; }
+#speech_text[aria-invalid="true"] { border-color: var(--danger) !important; }
+.reference-file .file-name { overflow-wrap: anywhere; }
+.result-player audio, .reference-file audio { width: 100%; min-width: 0; }
+@media (max-width: 620px) {
+    .record-controls, .library-controls { flex-wrap: wrap; }
+    .library-controls .form-group { min-width: 0; flex-basis: 100%; }
+    .transcript-footer { flex-wrap: wrap; gap: 8px; }
+    .btn-speed, .btn-transcript-action { min-height: 36px; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .btn-record.recording::before { animation: none; }
+    .vu-bar, .record-progress-fill { transition: none; }
+}
