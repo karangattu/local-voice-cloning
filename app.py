@@ -169,6 +169,12 @@ app_ui = ui.page_fluid(
                     if (el) el.textContent = msg;
                 }
 
+                function finishRecording(message) {
+                    isProcessing = false;
+                    document.getElementById('btn-record').disabled = false;
+                    setStatus(message);
+                }
+
                 function sanitizeName(name) {
                     return name.trim().toLowerCase()
                         .replace(/\\s+/g, '-')
@@ -237,6 +243,7 @@ app_ui = ui.page_fluid(
                         setStatus('Recording is not supported in this browser.');
                         return;
                     }
+                    document.getElementById("record-script").open = true;
                     isProcessing = true;
                     document.getElementById("btn-record").disabled = true;
                     navigator.mediaDevices.getUserMedia({ audio: true })
@@ -256,28 +263,36 @@ app_ui = ui.page_fluid(
                                 if (e.data.size > 0) audioChunks.push(e.data);
                             };
                             mediaRecorder.onstop = function() {
-                                var blob = new Blob(audioChunks, { type: 'audio/webm' });
+                                let awaitingSave = false;
+                                var blob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
                                 blob.arrayBuffer().then(function(buf) {
                                     return audioContext.decodeAudioData(buf);
                                 }).then(function(audioBuffer) {
                                     var wavBlob = encodeWav(audioBuffer);
                                     var reader = new FileReader();
-                                    reader.onloadend = function() {
+                                    reader.onload = function() {
                                         var name = sanitizeName(document.getElementById('voice_name').value);
                                         if (typeof Shiny !== 'undefined') {
-                                            Shiny.setInputValue('recorded_audio_data', { data: reader.result, name: name });
+                                            Shiny.setInputValue('recorded_audio_data', { data: reader.result, name: name }, {priority: 'event'});
                                         }
                                         setStatus('Processing...');
                                     };
+                                    reader.onerror = function() {
+                                        finishRecording('Could not read recording. Please try again.');
+                                    };
+                                    awaitingSave = true;
                                     reader.readAsDataURL(wavBlob);
                                 }).catch(function(err) {
+                                    awaitingSave = false;
                                     setStatus('Could not process recording: ' + err.message);
                                 }).finally(function() {
                                     if (mediaStream) mediaStream.getTracks().forEach(function(t) { t.stop(); });
                                     if (audioContext) { audioContext.close(); audioContext = null; }
                                     analyserNode = null;
-                                    isProcessing = false;
-                                    document.getElementById("btn-record").disabled = false;
+                                    if (!awaitingSave) {
+                                        isProcessing = false;
+                                        document.getElementById("btn-record").disabled = false;
+                                    }
                                 });
                             };
                             mediaRecorder.start();
@@ -359,6 +374,13 @@ app_ui = ui.page_fluid(
                 };
 
                 document.addEventListener('DOMContentLoaded', function() {
+                    Shiny.addCustomMessageHandler('recording-status', function(message) {
+                        finishRecording(message.text);
+                    });
+                    const recordingScript = document.getElementById('record-script');
+                    if (recordingScript && window.matchMedia('(max-width: 620px)').matches) {
+                        recordingScript.open = false;
+                    }
                     const preview = document.getElementById('reference_preview');
                     if (!preview) return;
                     const script = document.getElementById('speech_text');
@@ -463,24 +485,28 @@ app_ui = ui.page_fluid(
                                         width="100%",
                                     ),
                                 ),
-                                ui.div(
-                                    {"class": "template-options"},
-                                    ui.input_radio_buttons(
-                                        "record_template",
-                                        "Recording template",
-                                        choices={
-                                            "standard": "Standard",
-                                            "conversational": "Conversational",
-                                        },
-                                        selected="standard",
-                                        inline=True,
+                                ui.tags.details(
+                                    ui.tags.summary("Read-aloud script"),
+                                    ui.div(
+                                        {"class": "template-options"},
+                                        ui.input_radio_buttons(
+                                            "record_template",
+                                            "Recording template",
+                                            choices={
+                                                "standard": "Standard",
+                                                "conversational": "Conversational",
+                                            },
+                                            selected="standard",
+                                            inline=True,
+                                        ),
                                     ),
+                                    ui.div(
+                                        {"class": "record-prompt-caption"},
+                                        "Read this aloud at a natural pace:",
+                                    ),
+                                    ui.output_ui("recording_prompt_display"),
+                                    id="record-script", class_="record-script", open=True,
                                 ),
-                                ui.div(
-                                    {"class": "record-prompt-caption"},
-                                    "Read this aloud at a natural pace:",
-                                ),
-                                ui.output_ui("recording_prompt_display"),
                                 ui.div(
                                     {"class": "record-controls"},
                                     ui.tags.button(
@@ -605,6 +631,7 @@ app_ui = ui.page_fluid(
                                     ui.span("⌘↵", class_="kbd-shortcut"),
                                 ),
                                 class_="btn-create w-100",
+                                aria_describedby="generation_hint",
                             ),
                             ui.input_action_button(
                                 "btn_cancel",
@@ -612,7 +639,11 @@ app_ui = ui.page_fluid(
                                 class_="btn btn-outline-secondary btn-cancel w-100",
                                 disabled=True,
                             ),
-                            ui.output_text("speech_duration", inline=True),
+                            ui.div(
+                                ui.output_text("generation_hint", inline=True),
+                                ui.output_text("speech_duration", inline=True),
+                                class_="generation-guidance",
+                            ),
                         ),
                         ui.output_ui("generation_progress"),
                     ),
@@ -900,8 +931,16 @@ def server(input, output, session):
         return ui.div(
             {"class": "engine-pill", "title": title},
             icon_svg("microchip"),
-            "Local engine",
+            ui.span("Local", class_="engine-label"),
         )
+
+    @render.text
+    def generation_hint():
+        if run_synthesis.status() == "running":
+            return "Creating your audio…"
+        if not active_reference():
+            return "Add a voice reference to continue."
+        return script_validation_message(input.speech_text() or "") or "Ready when you are."
 
     @render.text
     def speech_duration():
@@ -964,44 +1003,49 @@ def server(input, output, session):
 
     @reactive.effect
     @reactive.event(input.recorded_audio_data)
-    def _save_recording():
+    async def _save_recording():
         payload = input.recorded_audio_data()
         if not payload:
             return
-        data_uri = payload["data"]
-        raw_name = payload.get("name", "")
-        name = _sanitize_voice_name(raw_name)
-        if not name:
-            ui.notification_show("Voice name is empty or invalid.", type="warning")
-            return
-        if "," not in data_uri:
-            ui.notification_show("Recording data is malformed.", type="error")
-            return
-        _header, b64_content = data_uri.split(",", 1)
-        wav_bytes = base64.b64decode(b64_content)
-        save_path = VOICE_SAMPLES_DIR / f"{name}.wav"
-
-        # Post-process the raw recording: resample to 24 kHz, strip leading
-        # and trailing silence, apply short fades, then save. Falls back to
-        # writing the raw bytes if any step fails.
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            tmp.write(wav_bytes)
-            tmp_path = Path(tmp.name)
         try:
-            tensor_audio, sr = load_audio(tmp_path)
-            audio_np = tensor_audio.squeeze(0).numpy()
-            audio_np = trim_silence(audio_np, sr)
-            audio_np = apply_fades(audio_np, sr)
-            save_audio(save_path, audio_np, sample_rate=sr)
-        except (OSError, RuntimeError, ValueError):
-            save_path.write_bytes(wav_bytes)
-        finally:
-            tmp_path.unlink(missing_ok=True)
+            data_uri = payload["data"]
+            raw_name = payload.get("name", "")
+            name = _sanitize_voice_name(raw_name)
+            if not name:
+                raise ValueError("Voice name is empty or invalid.")
+            if "," not in data_uri:
+                raise ValueError("Recording data is malformed.")
+            _header, b64_content = data_uri.split(",", 1)
+            wav_bytes = base64.b64decode(b64_content, validate=True)
+            save_path = VOICE_SAMPLES_DIR / f"{name}.wav"
 
-        last_recorded_path.set(str(save_path))
-        last_recorded_name.set(name)
-        library_refresh.set(library_refresh() + 1)
-        ui.notification_show(f"Saved voice profile '{name}'.", type="message")
+            # Post-process the raw recording: resample to 24 kHz, strip leading
+            # and trailing silence, apply short fades, then save. Falls back to
+            # writing the raw bytes if any step fails.
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                tmp.write(wav_bytes)
+                tmp_path = Path(tmp.name)
+            try:
+                tensor_audio, sr = load_audio(tmp_path)
+                audio_np = tensor_audio.squeeze(0).numpy()
+                audio_np = trim_silence(audio_np, sr)
+                audio_np = apply_fades(audio_np, sr)
+                save_audio(save_path, audio_np, sample_rate=sr)
+            except (OSError, RuntimeError, ValueError):
+                save_path.write_bytes(wav_bytes)
+            finally:
+                tmp_path.unlink(missing_ok=True)
+
+            last_recorded_path.set(str(save_path))
+            last_recorded_name.set(name)
+            library_refresh.set(library_refresh() + 1)
+            ui.notification_show(f"Saved voice profile '{name}'.", type="message")
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError) as exc:
+            message = f"Could not save recording: {exc}"
+            ui.notification_show(message, type="error")
+        else:
+            message = f"Voice saved · {name}"
+        await session.send_custom_message("recording-status", {"text": message})
 
     @reactive.effect
     @reactive.event(input.btn_refresh_voices)
@@ -1366,9 +1410,13 @@ def server(input, output, session):
         if run_synthesis.status() != "success" or not path or not Path(path).exists():
             return ui.div(
                 {"class": "output-surface output-empty"},
-                icon_svg("music"),
                 ui.div(
-                    ui.strong("Your synthesized audio will appear here"),
+                    *(ui.span(style=f"height: {height}px") for height in
+                      (8, 14, 22, 12, 30, 38, 20, 32, 16, 26, 12, 8)),
+                    class_="empty-waveform", aria_hidden="true",
+                ),
+                ui.div(
+                    ui.strong("Your audio will appear here"),
                     ui.div("Playback and downloads unlock when generation finishes.", class_="file-caption"),
                 ),
             )
