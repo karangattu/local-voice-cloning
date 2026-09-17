@@ -431,3 +431,172 @@ def test_uploaded_audio_preserves_mime_type_without_filename_extension(tmp_path)
     upload.write_bytes(b"audio")
     response = app_module.audio_file_response(upload, media_type="audio/mpeg")
     assert response.media_type == "audio/mpeg"
+
+
+def test_ui_contains_import_and_export_controls():
+    rendered = str(app_ui)
+    assert "import_voice_files" in rendered
+    assert "Import voices" in rendered
+
+
+def test_create_voices_zip(tmp_path):
+    voices_dir = tmp_path / "voices"
+    voices_dir.mkdir()
+    (voices_dir / "voice_a.wav").write_bytes(b"RIFFdummywav1")
+    (voices_dir / "voice_b.wav").write_bytes(b"RIFFdummywav2")
+    (voices_dir / "other.txt").write_bytes(b"not a wav")
+
+    out_zip = tmp_path / "export.zip"
+    result = app_module.create_voices_zip(out_zip, voices_dir=voices_dir)
+    assert result == out_zip
+    assert out_zip.exists()
+
+    import zipfile
+    with zipfile.ZipFile(out_zip, "r") as zf:
+        names = zf.namelist()
+        assert "voice_a.wav" in names
+        assert "voice_b.wav" in names
+        assert "other.txt" not in names
+
+
+def test_create_voices_zip_subset(tmp_path):
+    voices_dir = tmp_path / "voices"
+    voices_dir.mkdir()
+    (voices_dir / "voice_a.wav").write_bytes(b"RIFFdummywav1")
+    (voices_dir / "voice_b.wav").write_bytes(b"RIFFdummywav2")
+
+    out_zip = tmp_path / "export_sub.zip"
+    app_module.create_voices_zip(out_zip, voice_names=["voice_a"], voices_dir=voices_dir)
+
+    import zipfile
+    with zipfile.ZipFile(out_zip, "r") as zf:
+        assert zf.namelist() == ["voice_a.wav"]
+
+
+def test_import_voice_file_audio(tmp_path):
+    voices_dir = tmp_path / "voices"
+    voices_dir.mkdir()
+    sample_wav = tmp_path / "input.wav"
+    sr = 24000
+    sf.write(str(sample_wav), np.zeros(2400, dtype=np.float32), sr)
+
+    imported = app_module.import_voice_file(sample_wav, "My Friend's Voice.wav", voices_dir=voices_dir)
+    assert imported == ["my-friends-voice"]
+    target = voices_dir / "my-friends-voice.wav"
+    assert target.exists()
+    info = sf.info(str(target))
+    assert info.samplerate == 24000
+
+
+def test_import_voice_file_zip(tmp_path):
+    voices_dir = tmp_path / "voices"
+    voices_dir.mkdir()
+
+    source_wav1 = tmp_path / "voice1.wav"
+    source_wav2 = tmp_path / "voice2.wav"
+    sr = 24000
+    sf.write(str(source_wav1), np.zeros(2400, dtype=np.float32), sr)
+    sf.write(str(source_wav2), np.zeros(2400, dtype=np.float32), sr)
+
+    zip_path = tmp_path / "archive.zip"
+    import zipfile
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.write(source_wav1, arcname="Alice Voice.wav")
+        zf.write(source_wav2, arcname="folder/Bob Voice.wav")
+        zf.writestr("notes.txt", "some notes")
+
+    imported = app_module.import_voice_file(zip_path, "archive.zip", voices_dir=voices_dir)
+    assert sorted(imported) == ["alice-voice", "bob-voice"]
+    assert (voices_dir / "alice-voice.wav").exists()
+    assert (voices_dir / "bob-voice.wav").exists()
+    assert not (voices_dir / "notes.txt").exists()
+
+
+def test_import_voice_file_zip_slip_prevention(tmp_path):
+    voices_dir = tmp_path / "voices"
+    voices_dir.mkdir()
+
+    source_wav = tmp_path / "malicious.wav"
+    sf.write(str(source_wav), np.zeros(2400, dtype=np.float32), 24000)
+
+    zip_path = tmp_path / "slip.zip"
+    import zipfile
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.write(source_wav, arcname="../../evil.wav")
+
+    imported = app_module.import_voice_file(zip_path, "slip.zip", voices_dir=voices_dir)
+    assert imported == ["evil"]
+    assert (voices_dir / "evil.wav").exists()
+    assert not (tmp_path / "evil.wav").exists()
+
+
+def test_import_voice_file_invalid_file(tmp_path):
+    import pytest
+    voices_dir = tmp_path / "voices"
+    voices_dir.mkdir()
+
+    bad_file = tmp_path / "corrupt.wav"
+    bad_file.write_bytes(b"not an audio file")
+
+    with pytest.raises((OSError, RuntimeError, ValueError)):
+        app_module.import_voice_file(bad_file, "corrupt.wav", voices_dir=voices_dir)
+
+
+def test_import_voice_file_invalid_zip(tmp_path):
+    import pytest
+    voices_dir = tmp_path / "voices"
+    voices_dir.mkdir()
+
+    bad_zip = tmp_path / "fake.zip"
+    bad_zip.write_bytes(b"not a zip")
+
+    with pytest.raises(ValueError, match="not a valid zip archive"):
+        app_module.import_voice_file(bad_zip, "fake.zip", voices_dir=voices_dir)
+
+
+def test_import_voice_file_empty_zip(tmp_path):
+    import zipfile
+
+    import pytest
+    voices_dir = tmp_path / "voices"
+    voices_dir.mkdir()
+
+    empty_zip = tmp_path / "empty.zip"
+    with zipfile.ZipFile(empty_zip, "w") as zf:
+        zf.writestr("readme.txt", "nothing here")
+
+    with pytest.raises(ValueError, match="No valid voice audio files found"):
+        app_module.import_voice_file(empty_zip, "empty.zip", voices_dir=voices_dir)
+
+
+def test_export_responses_with_test_client(tmp_path):
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+
+    voices_dir = tmp_path / "voices"
+    voices_dir.mkdir()
+    v_path = voices_dir / "demo.wav"
+    sf.write(str(v_path), np.zeros(2400, dtype=np.float32), 24000)
+
+    zip_path = tmp_path / "saved_voices.zip"
+    app_module.create_voices_zip(zip_path, voices_dir=voices_dir)
+
+    web_app = Starlette(routes=[
+        Route("/export-voice", lambda req: app_module.audio_file_response(v_path, "demo.wav")),
+        Route("/export-all", lambda req: app_module.FileResponse(
+            zip_path,
+            media_type="application/zip",
+            filename="saved_voices.zip",
+            content_disposition_type="attachment",
+        )),
+    ])
+    with TestClient(web_app) as client:
+        res_voice = client.get("/export-voice")
+        assert res_voice.status_code == 200
+        assert 'attachment; filename="demo.wav"' == res_voice.headers["content-disposition"]
+
+        res_zip = client.get("/export-all")
+        assert res_zip.status_code == 200
+        assert 'attachment; filename="saved_voices.zip"' == res_zip.headers["content-disposition"]
+        assert res_zip.headers["content-type"] == "application/zip"

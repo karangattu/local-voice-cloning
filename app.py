@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import uuid
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -16,7 +17,7 @@ import shinyswatch
 import soundfile as sf
 from faicons import icon_svg
 from shiny import App, _utils, reactive, render, ui
-from starlette.responses import FileResponse
+from starlette.responses import FileResponse, Response
 
 
 def _configure_shiny_port(
@@ -547,6 +548,17 @@ app_ui = ui.page_fluid(
                             ui.div(
                                 {"class": "library-panel"},
                                 ui.output_ui("library_selector"),
+                                ui.div(
+                                    {"class": "library-import-section"},
+                                    ui.input_file(
+                                        "import_voice_files",
+                                        "Import voices (audio or .zip)",
+                                        accept=[".wav", ".mp3", ".ogg", ".flac", ".m4a", ".zip"],
+                                        multiple=True,
+                                        button_label="Import...",
+                                        placeholder="Choose audio or zip archive",
+                                    ),
+                                ),
                             ),
                         ),
                         id="voice-setup", open=True,
@@ -685,21 +697,111 @@ def _sanitize_voice_name(name: str) -> str:
     return name.strip("-")
 
 
-def _saved_voice_path(selected: str) -> Path | None:
+def _saved_voice_path(selected: str, voices_dir: Path | None = None) -> Path | None:
     if not isinstance(selected, str):
         return None
+    dir_path = VOICE_SAMPLES_DIR if voices_dir is None else Path(voices_dir)
     saved_names = {
-        path.stem for path in VOICE_SAMPLES_DIR.glob("*.wav") if path.is_file()
+        path.stem for path in dir_path.glob("*.wav") if path.is_file()
     }
     if selected not in saved_names:
         return None
 
-    path = VOICE_SAMPLES_DIR / f"{selected}.wav"
+    path = dir_path / f"{selected}.wav"
     try:
-        path.resolve().relative_to(VOICE_SAMPLES_DIR.resolve())
+        path.resolve().relative_to(dir_path.resolve())
     except ValueError:
         return None
     return path
+
+
+def create_voices_zip(
+    output_path: Path,
+    voice_names: list[str] | None = None,
+    voices_dir: Path | None = None,
+) -> Path:
+    dir_path = VOICE_SAMPLES_DIR if voices_dir is None else Path(voices_dir)
+    if voice_names is None:
+        voice_files = sorted(dir_path.glob("*.wav"))
+    else:
+        name_set = set(voice_names)
+        voice_files = sorted(p for p in dir_path.glob("*.wav") if p.stem in name_set)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for vf in voice_files:
+            if vf.is_file():
+                zf.write(vf, arcname=vf.name)
+    return output_path
+
+
+def _process_and_save_voice_audio(
+    source_path: Path,
+    voice_name: str,
+    voices_dir: Path,
+) -> str:
+    name = _sanitize_voice_name(voice_name)
+    if not name:
+        raise ValueError(f"Invalid voice name '{voice_name}'.")
+    target_path = voices_dir / f"{name}.wav"
+    try:
+        target_path.resolve().relative_to(voices_dir.resolve())
+    except ValueError as exc:
+        raise ValueError(f"Invalid target path for '{name}'.") from exc
+
+    tensor_audio, sr = load_audio(source_path)
+    audio_np = tensor_audio.squeeze(0).numpy()
+    audio_np = trim_silence(audio_np, sr)
+    audio_np = apply_fades(audio_np, sr)
+    save_audio(target_path, audio_np, sample_rate=sr)
+    return name
+
+
+def import_voice_file(
+    source_path: Path,
+    filename: str,
+    voices_dir: Path | None = None,
+) -> list[str]:
+    dir_path = VOICE_SAMPLES_DIR if voices_dir is None else Path(voices_dir)
+    dir_path.mkdir(parents=True, exist_ok=True)
+
+    imported_names: list[str] = []
+    suffix = Path(filename).suffix.lower()
+
+    if suffix == ".zip":
+        if not zipfile.is_zipfile(source_path):
+            raise ValueError(f"'{filename}' is not a valid zip archive.")
+        with zipfile.ZipFile(source_path, "r") as zf:
+            allowed_suffixes = {".wav", ".mp3", ".ogg", ".flac", ".m4a"}
+            with tempfile.TemporaryDirectory() as extract_dir:
+                ext_path = Path(extract_dir)
+                for idx, member in enumerate(zf.namelist()):
+                    if member.endswith("/") or member.startswith("__MACOSX/") or Path(member).name.startswith("."):
+                        continue
+                    member_suffix = Path(member).suffix.lower()
+                    if member_suffix not in allowed_suffixes:
+                        continue
+                    safe_stem = _sanitize_voice_name(Path(member).stem)
+                    if not safe_stem:
+                        continue
+                    extracted_file = ext_path / f"tmp_{idx}{member_suffix}"
+                    with zf.open(member) as src_f, open(extracted_file, "wb") as dst_f:
+                        shutil.copyfileobj(src_f, dst_f)
+                    try:
+                        saved = _process_and_save_voice_audio(extracted_file, safe_stem, dir_path)
+                        imported_names.append(saved)
+                    except (OSError, RuntimeError, ValueError):
+                        continue
+                    finally:
+                        extracted_file.unlink(missing_ok=True)
+        if not imported_names:
+            raise ValueError(f"No valid voice audio files found in '{filename}'.")
+    else:
+        stem = Path(filename).stem
+        saved = _process_and_save_voice_audio(source_path, stem, dir_path)
+        imported_names.append(saved)
+
+    return imported_names
 
 
 def get_reference_id(audio_path: str | Path | None) -> str:
@@ -971,14 +1073,36 @@ def server(input, output, session):
         library_refresh()
         return sorted(p.stem for p in VOICE_SAMPLES_DIR.glob("*.wav"))
 
+    def serve_selected_voice(request):
+        selected = input.voice_library() or ""
+        path = _saved_voice_path(selected)
+        if not path:
+            return Response(content="Voice not found", status_code=404)
+        return audio_file_response(path, f"{selected}.wav")
+
+    def serve_all_voices(request):
+        zip_path = session_dir / "saved_voices.zip"
+        create_voices_zip(output_path=zip_path, voices_dir=VOICE_SAMPLES_DIR)
+        return FileResponse(
+            zip_path,
+            media_type="application/zip",
+            filename="saved_voices.zip",
+            content_disposition_type="attachment",
+            headers={"Cache-Control": "private, no-store"},
+        )
+
     @render.ui
     def library_selector():
         voices = library_choices()
         if not voices:
             return ui.div(
                 {"class": "library-empty"},
-                "No saved voices yet. Record one in the Record tab.",
+                "No saved voices yet. Record one in the Record tab or import below.",
             )
+
+        export_voice_url = session.dynamic_route("export-voice", serve_selected_voice)
+        export_all_url = session.dynamic_route("export-all-voices", serve_all_voices)
+
         return ui.div(
             {"class": "library-controls"},
             ui.input_select(
@@ -986,6 +1110,20 @@ def server(input, output, session):
                 "Saved voices",
                 choices={v: v for v in voices},
                 selected=voices[0],
+            ),
+            ui.tags.a(
+                icon_svg("download"),
+                href=export_voice_url,
+                download="",
+                class_="btn btn-outline-secondary btn-sm btn-export-voice",
+                title="Export selected voice (.wav)",
+            ),
+            ui.tags.a(
+                icon_svg("file-zipper"),
+                href=export_all_url,
+                download="saved_voices.zip",
+                class_="btn btn-outline-secondary btn-sm btn-export-all-voices",
+                title="Export all voices (.zip)",
             ),
             ui.input_action_button(
                 "btn_refresh_voices",
@@ -1000,6 +1138,38 @@ def server(input, output, session):
                 title="Delete selected voice",
             ),
         )
+
+    @reactive.effect
+    @reactive.event(input.import_voice_files)
+    def _import_voices():
+        file_infos = input.import_voice_files()
+        if not file_infos:
+            return
+        total_imported = []
+        errors = []
+        for info in file_infos:
+            file_path = Path(info["datapath"])
+            orig_name = info["name"]
+            try:
+                imported = import_voice_file(file_path, orig_name, VOICE_SAMPLES_DIR)
+                total_imported.extend(imported)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{orig_name}: {exc}")
+
+        if total_imported:
+            library_refresh.set(library_refresh() + 1)
+            last_name = total_imported[-1]
+            ui.update_select("voice_library", selected=last_name)
+            if len(total_imported) == 1:
+                ui.notification_show(f"Imported voice profile '{total_imported[0]}'.", type="message")
+            else:
+                summary = ", ".join(total_imported[:5])
+                if len(total_imported) > 5:
+                    summary += f" and {len(total_imported) - 5} more"
+                ui.notification_show(f"Imported {len(total_imported)} voice profiles: {summary}.", type="message")
+
+        if errors:
+            ui.notification_show(f"Import error: {'; '.join(errors)}", type="error")
 
     @reactive.effect
     @reactive.event(input.recorded_audio_data)

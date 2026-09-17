@@ -33,7 +33,7 @@ uv run shiny run app.py
 ```
 
 Open the URL shown in your terminal (e.g. `http://127.0.0.1:<port>`), then:
-1. Record or upload a 5–12 second voice clip.
+1. Record or upload a 5–12 second voice clip, or select / import a saved voice.
 2. Check the automatic transcript and fix any mistakes.
 3. Enter your script and click **Create audio**.
 

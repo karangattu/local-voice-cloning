@@ -785,15 +785,40 @@ button:focus-visible, a:focus-visible, .btn-record:focus-visible, .btn-speed:foc
 .library-controls { display: flex; gap: 9px; align-items: end; }
 .library-controls .form-group { flex: 1; margin: 0; }
 .library-controls .control-label { color: var(--muted); font-size: 12px; font-weight: 560; margin-bottom: 7px; }
-.btn-refresh-voices, .btn-delete-voice {
+.btn-refresh-voices, .btn-delete-voice, .btn-export-voice, .btn-export-all-voices {
     min-height: 42px; font-size: 12px !important; white-space: nowrap;
     border-radius: 10px !important; transition: border-color .16s ease, color .16s ease, background .16s ease;
+    display: inline-flex; align-items: center; justify-content: center; text-decoration: none;
 }
-.btn-refresh-voices { border: 1px solid var(--border) !important; color: var(--text) !important; background: rgba(255, 255, 255, 0.04) !important; }
-.btn-refresh-voices:hover { border-color: rgba(94, 236, 200, 0.45) !important; color: var(--mint-soft) !important; background: rgba(94, 236, 200, 0.07) !important; }
+.btn-refresh-voices, .btn-export-voice, .btn-export-all-voices { border: 1px solid var(--border) !important; color: var(--text) !important; background: rgba(255, 255, 255, 0.04) !important; }
+.btn-refresh-voices:hover, .btn-export-voice:hover, .btn-export-all-voices:hover { border-color: rgba(94, 236, 200, 0.45) !important; color: var(--mint-soft) !important; background: rgba(94, 236, 200, 0.07) !important; }
 .btn-delete-voice { border: 1px solid rgba(251,113,133,.3) !important; color: var(--danger) !important; background: rgba(255, 255, 255, 0.04) !important; }
 .btn-delete-voice:hover { background: rgba(251,113,133,.1) !important; border-color: rgba(251,113,133,.5) !important; }
 .library-empty { color: var(--subtle); font-size: 13px; margin-top: 12px; }
+.library-import-section {
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+}
+.library-import-section .form-group { margin: 0; }
+.library-import-section .control-label { color: var(--muted); font-size: 12px; font-weight: 560; margin-bottom: 7px; }
+.library-import-section .input-group {
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px dashed var(--border-strong);
+    padding: 3px;
+    transition: border-color .18s ease, background .18s ease;
+}
+.library-import-section .input-group:hover {
+    border-color: rgba(94, 236, 200, 0.5);
+    background: rgba(94, 236, 200, 0.06);
+}
+.library-import-section .btn-file {
+    background: var(--surface-soft);
+    border: 1px solid var(--border-strong);
+    color: var(--text);
+    border-radius: 10px;
+}
 
 .transcript-card {
     margin-top: 14px;
@@ -1143,6 +1168,7 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 
 /* Shared control rhythm and quiet workflow guidance. */
 .btn-record, .btn-download, .btn-cancel, .btn-refresh-voices, .btn-delete-voice,
+.btn-export-voice, .btn-export-all-voices,
 .btn-transcript-action, .btn-speed {
     min-height: 40px;
     border-radius: var(--radius-control) !important;
