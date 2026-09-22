@@ -10,9 +10,17 @@ from typing import Any
 import numpy as np
 import soundfile as sf
 
-from src.audio_utils import enhance_audio, load_audio
+from src.audio_utils import (
+    enhance_audio,
+    join_with_room_tone,
+    load_audio,
+    normalize_audio,
+    prepare_reference_audio,
+    trim_silence,
+)
 
 MAX_REFERENCE_SECONDS = 12.0
+MAX_SOURCE_SECONDS = 120.0
 LINE_BREAK_PAUSE_SECONDS = 0.4
 ENGINE_NAME = "Qwen3-TTS 1.7B"
 ENGINES = {"qwen": ENGINE_NAME, "omnivoice": "OmniVoice"}
@@ -189,13 +197,21 @@ class LocalVoiceCloner:
             raise RuntimeError("The reference recording could not be transcribed.")
         return transcript
 
-    def transcribe(self, reference_audio_path: str | Path) -> str:
+    def _load_reference(self, reference_audio_path: str | Path) -> tuple[np.ndarray, int]:
         tensor_audio, ref_sr = load_audio(
             reference_audio_path,
             target_sr=self.sample_rate,
+            max_duration_seconds=MAX_SOURCE_SECONDS,
+        )
+        audio_np = prepare_reference_audio(
+            tensor_audio.squeeze().numpy(),
+            ref_sr,
             max_duration_seconds=MAX_REFERENCE_SECONDS,
         )
-        audio_np = tensor_audio.squeeze().numpy()
+        return normalize_audio(audio_np), ref_sr
+
+    def transcribe(self, reference_audio_path: str | Path) -> str:
+        audio_np, ref_sr = self._load_reference(reference_audio_path)
         if len(audio_np) == 0:
             raise ValueError("Reference audio is empty.")
 
@@ -223,12 +239,7 @@ class LocalVoiceCloner:
 
         notify = progress_callback or (lambda _stage: None)
         notify("prepare")
-        tensor_audio, ref_sr = load_audio(
-            reference_audio_path,
-            target_sr=self.sample_rate,
-            max_duration_seconds=MAX_REFERENCE_SECONDS,
-        )
-        audio_np = tensor_audio.squeeze().numpy()
+        audio_np, ref_sr = self._load_reference(reference_audio_path)
         if len(audio_np) == 0:
             raise ValueError("Reference audio is empty.")
 
@@ -246,7 +257,7 @@ class LocalVoiceCloner:
 
             notify("voice")
             sample_rate = self.sample_rate
-            pieces: list[np.ndarray] = []
+            pieces: list[tuple[np.ndarray, float]] = []
             for segment, newline_count in _script_segments(text):
                 if self.engine == "omnivoice":
                     audio = tts_model.generate(
@@ -277,18 +288,16 @@ class LocalVoiceCloner:
                     raise RuntimeError("The voice model returned no audio.")
 
                 sample_rate = int(getattr(generations[0], "sample_rate", sample_rate))
-                if pieces and newline_count:
-                    pieces.append(
-                        np.zeros(
-                            round(sample_rate * LINE_BREAK_PAUSE_SECONDS * newline_count),
-                            dtype=np.float32,
-                        )
-                    )
                 for index, item in enumerate(generations):
                     if index:
-                        pieces.append(np.zeros(round(sample_rate * 0.08), dtype=np.float32))
-                    pieces.append(np.asarray(item.audio).squeeze().astype(np.float32))
-            generated = np.concatenate(pieces)
+                        pause = 0.08
+                    else:
+                        pause = LINE_BREAK_PAUSE_SECONDS * newline_count if pieces else 0.0
+                    piece = np.asarray(item.audio).squeeze().astype(np.float32)
+                    # Remove the model's near-silent edges; room tone fills the joins instead.
+                    piece = trim_silence(piece, sample_rate, threshold_db=-70.0, padding_seconds=0.0)
+                    pieces.append((piece, pause))
+            generated = join_with_room_tone(pieces, sample_rate)
 
             notify("finish")
             enhanced = enhance_audio(generated, sample_rate, target_level_db=-16.0)

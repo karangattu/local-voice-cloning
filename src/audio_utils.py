@@ -4,6 +4,7 @@ import numpy as np
 import soundfile as sf
 import torch
 from scipy import signal
+from scipy.ndimage import maximum_filter1d
 
 
 def load_audio(
@@ -152,12 +153,191 @@ def apply_fades(audio: np.ndarray, sample_rate: int, fade_seconds: float = 0.015
     return audio
 
 
+def prepare_reference_audio(
+    audio: np.ndarray,
+    sample_rate: int,
+    max_duration_seconds: float = 12.0,
+    max_pause_seconds: float = 0.4,
+    tail_silence_seconds: float = 0.3,
+) -> np.ndarray:
+    """Clean a voice sample before it is used as a cloning prompt.
+
+    The model continues speech directly from the end of the reference. A
+    reference that is cut mid-word leaks a burst of that word into the start
+    of every generated line, and long pauses teach the model to pause. This
+    function trims the edges, shortens long pauses, cuts at a pause instead of
+    mid-word, and ends the sample with a short silence."""
+    frame = max(1, int(sample_rate * 0.02))
+    n_frames = len(audio) // frame
+    if n_frames == 0:
+        return audio.astype(np.float32)
+    frames = audio[: n_frames * frame].reshape(n_frames, frame)
+    frame_db = 20.0 * np.log10(np.sqrt(np.mean(frames**2, axis=1)) + 1e-9)
+    threshold_db = max(-50.0, float(np.percentile(frame_db, 95)) - 35.0)
+    active = frame_db > threshold_db
+    speech = np.flatnonzero(active)
+    if len(speech) == 0:
+        return audio.astype(np.float32)
+
+    edge_pad = int(0.1 / 0.02)
+    first = max(0, speech[0] - edge_pad)
+    last = min(n_frames - 1, speech[-1] + edge_pad)
+    keep = np.zeros(n_frames, dtype=bool)
+    keep[first : last + 1] = True
+
+    max_pause_frames = int(max_pause_seconds / 0.02)
+    half = max_pause_frames // 2
+    index = speech[0]
+    while index <= speech[-1]:
+        if active[index]:
+            index += 1
+            continue
+        end = index
+        while end <= speech[-1] and not active[end]:
+            end += 1
+        if end - index > max_pause_frames:
+            keep[index + half : end - half] = False
+        index = end
+
+    kept = np.flatnonzero(keep)
+    kept_active = active[kept]
+    audio = frames[kept].reshape(-1)
+
+    max_frames = int(max_duration_seconds / 0.02)
+    if len(kept) > max_frames:
+        window_start = int(max_frames * 0.6)
+        pauses = np.flatnonzero(~kept_active[window_start:max_frames])
+        if len(pauses):
+            cut = window_start + int(pauses[-1])
+        else:
+            cut = window_start + int(np.argmin(frame_db[kept][window_start:max_frames]))
+        audio = audio[: (cut + 1) * frame]
+
+    audio = audio.astype(np.float32).copy()
+    n_fade = min(int(sample_rate * 0.02), len(audio) // 2)
+    audio[:n_fade] *= np.linspace(0.0, 1.0, n_fade, dtype=np.float32)
+    # End on room tone, not digital silence, so the model keeps the background noise.
+    tail = room_tone(frames.reshape(-1), sample_rate, int(sample_rate * tail_silence_seconds))
+    return join_with_room_tone([(audio, 0.0)], sample_rate, tail=tail)
+
+
+def room_tone(audio: np.ndarray, sample_rate: int, num_samples: int, seed: int = 0) -> np.ndarray:
+    """Synthesize background noise with the spectrum and level of the quietest
+    parts of audio. Returns digital silence when audio has no background noise."""
+    silence = np.zeros(max(0, num_samples), dtype=np.float32)
+    frame = max(1, int(sample_rate * 0.02))
+    n_frames = len(audio) // frame
+    if num_samples <= 0 or n_frames == 0:
+        return silence
+    frames = audio[: n_frames * frame].reshape(n_frames, frame)
+    frame_db = 20.0 * np.log10(np.sqrt(np.mean(frames**2, axis=1)) + 1e-9)
+    valid = frame_db > -90.0
+    if not np.any(valid):
+        return silence
+    quiet_db = np.percentile(frame_db[valid], 15)
+    # Without real pauses, the quietest frames are speech, not background noise.
+    if quiet_db > np.percentile(frame_db[valid], 90) - 20.0:
+        return silence
+    quiet = frames[valid & (frame_db <= quiet_db)].reshape(-1)
+    if len(quiet) < 256:
+        return silence
+    freqs, psd = signal.welch(quiet, fs=sample_rate, nperseg=min(512, len(quiet)))
+    rng = np.random.default_rng(seed)
+    spectrum = np.fft.rfft(rng.standard_normal(num_samples))
+    shape = np.sqrt(np.interp(np.fft.rfftfreq(num_samples, 1.0 / sample_rate), freqs, psd))
+    noise = np.fft.irfft(spectrum * shape, n=num_samples)
+    noise *= np.sqrt(np.mean(quiet**2)) / (np.sqrt(np.mean(noise**2)) + 1e-12)
+    return noise.astype(np.float32)
+
+
+def join_with_room_tone(
+    pieces: list[tuple[np.ndarray, float]],
+    sample_rate: int,
+    crossfade_seconds: float = 0.03,
+    tail: np.ndarray | None = None,
+) -> np.ndarray:
+    """Join speech pieces. Each piece is (audio, pause_before_seconds). Pauses
+    are filled with matching room tone and every edge is crossfaded, so the
+    background noise stays constant instead of dropping out between pieces.
+    An optional tail of room tone is crossfaded onto the end."""
+    if not pieces:
+        return np.zeros(0, dtype=np.float32)
+    source = np.concatenate([np.asarray(audio, dtype=np.float32) for audio, _ in pieces])
+    tail_len = 0 if tail is None else len(tail)
+    total = sum(len(audio) + round(sample_rate * pause) for audio, pause in pieces) + tail_len
+    bed = room_tone(source, sample_rate, total) if tail is None else np.concatenate(
+        [room_tone(source, sample_rate, total - tail_len), tail]
+    )
+    speech = np.zeros(total, dtype=np.float32)
+    gain = np.zeros(total, dtype=np.float32)
+    position = 0
+    for audio, pause in pieces:
+        position += round(sample_rate * pause)
+        length = len(audio)
+        speech[position : position + length] = audio
+        piece_gain = np.ones(length, dtype=np.float32)
+        n_fade = min(int(sample_rate * crossfade_seconds), length // 2)
+        if n_fade:
+            ramp = np.sin(np.linspace(0.0, np.pi / 2, n_fade, dtype=np.float32))
+            if position > 0:
+                piece_gain[:n_fade] = ramp
+            if position + length < total or tail is not None:
+                piece_gain[-n_fade:] = ramp[::-1]
+        gain[position : position + length] = piece_gain
+        position += length
+    # Equal-power crossfade: speech and room tone are uncorrelated noise at the joins.
+    return (speech * gain + bed * np.sqrt(1.0 - gain**2)).astype(np.float32)
+
+
+def reduce_background_noise(
+    audio: np.ndarray,
+    sample_rate: int,
+    reduction_db: float = 15.0,
+    lookahead_seconds: float = 0.03,
+    release_seconds: float = 0.12,
+) -> np.ndarray:
+    """Lower steady background hiss in pauses with a soft downward expander.
+
+    Speech passes at full level. The gain opens before each word so onsets are
+    not cut, and closes slowly so the background fades instead of pumping."""
+    hop = max(1, int(sample_rate * 0.01))
+    n_frames = len(audio) // hop
+    if n_frames < 2:
+        return audio.astype(np.float32)
+    frames = audio[: n_frames * hop].reshape(n_frames, hop)
+    frame_db = 20.0 * np.log10(np.sqrt(np.mean(frames**2, axis=1)) + 1e-9)
+    valid = frame_db > -90.0
+    if not np.any(valid):
+        return audio.astype(np.float32)
+    floor_db = float(np.percentile(frame_db[valid], 15))
+    if floor_db > np.percentile(frame_db[valid], 90) - 20.0:
+        return audio.astype(np.float32)
+
+    # Full reduction at the noise floor, no reduction 12 dB above it.
+    knee = np.clip((frame_db - (floor_db + 3.0)) / 12.0, 0.0, 1.0)
+    gain_db = -reduction_db * (1.0 - knee)
+    lookahead = max(1, int(lookahead_seconds / 0.01))
+    gain_db = maximum_filter1d(gain_db, size=2 * lookahead + 1)
+    release = np.exp(-0.01 / release_seconds)
+    smoothed = np.empty_like(gain_db)
+    current = gain_db[0]
+    for index, target in enumerate(gain_db):
+        current = target if target > current else release * current + (1.0 - release) * target
+        smoothed[index] = current
+
+    positions = (np.arange(n_frames) + 0.5) * hop
+    gain = 10.0 ** (np.interp(np.arange(len(audio)), positions, smoothed) / 20.0)
+    return (audio * gain).astype(np.float32)
+
+
 def enhance_audio(audio: np.ndarray, sample_rate: int, target_level_db: float = -16.0) -> np.ndarray:
-    """Post-processing chain for synthesized speech: rumble removal, edge
-    silence trimming, click-free fades, and peak-safe loudness normalization."""
+    """Post-processing chain for synthesized speech: rumble removal, background
+    hiss reduction, edge silence trimming, click-free fades, and peak-safe
+    loudness normalization."""
     if len(audio) == 0:
         return audio.astype(np.float32)
     audio = high_pass_filter(audio, sample_rate)
+    audio = reduce_background_noise(audio, sample_rate)
     audio = trim_silence(audio, sample_rate)
     audio = apply_fades(audio, sample_rate)
     return normalize_audio(audio, target_level_db=target_level_db)

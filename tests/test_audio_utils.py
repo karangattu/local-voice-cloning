@@ -11,8 +11,11 @@ from src.audio_utils import (
     apply_fades,
     enhance_audio,
     high_pass_filter,
+    join_with_room_tone,
     load_audio,
     normalize_audio,
+    prepare_reference_audio,
+    reduce_background_noise,
     resample_audio,
     save_audio,
     trim_silence,
@@ -128,6 +131,56 @@ def test_apply_fades_zeroes_endpoints():
     assert faded[0] == 0.0
     assert faded[-1] == 0.0
     assert faded[sr // 2] == 1.0
+
+
+def test_prepare_reference_shortens_long_pauses():
+    sr = 24000
+    tone = _make_tone(sr)
+    audio = np.concatenate([np.zeros(sr), tone, np.zeros(2 * sr), tone, np.zeros(sr)])
+    prepared = prepare_reference_audio(audio, sr, tail_silence_seconds=0.0)
+    assert len(prepared) < 3 * sr
+
+
+def test_prepare_reference_cuts_at_pause_and_ends_silent():
+    sr = 24000
+    speech = np.concatenate([_make_tone(sr), np.zeros(sr // 5, dtype=np.float32)] * 10)
+    prepared = prepare_reference_audio(speech, sr, max_duration_seconds=6.0, tail_silence_seconds=0.3)
+    assert len(prepared) <= int(6.3 * sr)
+    tail_start = len(prepared) - int(0.35 * sr)
+    assert np.max(np.abs(prepared[tail_start:])) < 1e-3
+
+
+def test_join_with_room_tone_keeps_background_noise_in_pauses():
+    sr = 24000
+    rng = np.random.default_rng(1)
+    noise = (0.003 * rng.standard_normal(sr)).astype(np.float32)
+    piece = np.concatenate([noise[: sr // 4], _make_tone(sr, 0.5) + noise[: sr // 2], noise[: sr // 4]])
+    joined = join_with_room_tone([(piece, 0.0), (piece, 0.4)], sr)
+    assert len(joined) == 2 * len(piece) + int(0.4 * sr)
+    pause = joined[len(piece) : len(piece) + int(0.4 * sr)]
+    pause_rms = np.sqrt(np.mean(pause**2))
+    assert 0.5 * 0.003 < pause_rms < 2.0 * 0.003
+
+
+def test_join_with_room_tone_uses_silence_for_clean_audio():
+    sr = 24000
+    joined = join_with_room_tone([(_make_tone(sr, 0.2), 0.0), (_make_tone(sr, 0.2), 0.3)], sr)
+    assert np.all(joined[int(0.2 * sr) : int(0.5 * sr)] == 0)
+
+
+def test_reduce_background_noise_lowers_pauses_and_keeps_speech():
+    sr = 24000
+    rng = np.random.default_rng(2)
+    noise = (0.003 * rng.standard_normal(3 * sr)).astype(np.float32)
+    audio = noise.copy()
+    audio[sr : 2 * sr] += _make_tone(sr)
+    reduced = reduce_background_noise(audio, sr)
+    pause_ratio = np.sqrt(np.mean(reduced[: sr // 2] ** 2)) / np.sqrt(np.mean(audio[: sr // 2] ** 2))
+    speech_ratio = np.sqrt(np.mean(reduced[sr + sr // 4 : 2 * sr - sr // 4] ** 2)) / np.sqrt(
+        np.mean(audio[sr + sr // 4 : 2 * sr - sr // 4] ** 2)
+    )
+    assert pause_ratio < 0.25
+    assert speech_ratio > 0.99
 
 
 def test_enhance_audio_pipeline():
