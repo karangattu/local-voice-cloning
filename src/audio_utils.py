@@ -92,7 +92,7 @@ def analyze_reference_audio(file_path: str | Path) -> dict:
     if duration < 3.0:
         warnings.append("The sample is shorter than 3 seconds. Use 5 to 12 seconds of speech.")
     elif duration > 12.0:
-        warnings.append("The sample is longer than 12 seconds. Only the first 12 seconds are used.")
+        warnings.append("The sample is longer than 12 seconds. The app uses about 12 seconds and cuts at a pause.")
     if clipping_ratio > 0.001:
         warnings.append("The sample is clipped (distorted). Record again at a lower input level.")
     if rms_db < -35.0:

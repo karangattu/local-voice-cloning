@@ -28,10 +28,10 @@ def test_selected_listening_room_ui_contains_the_core_workflow():
     for copy in (
         "Sona — Local Voice Studio",
         "Private session",
-        "Voice reference",
-        "Script",
+        "Choose a voice",
+        "Write your script",
         "Create audio",
-        "Generated output",
+        "Listen and download",
         "Qwen3-TTS 1.7B",
         "Output language",
     ):

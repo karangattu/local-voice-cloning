@@ -72,6 +72,7 @@ from src.progress import progress_snapshot, run_with_progress
 
 VOICE_SAMPLES_DIR = Path(__file__).parent / "voice_samples"
 VOICE_SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
+DEFAULT_REF_MODE = "library" if any(VOICE_SAMPLES_DIR.glob("*.wav")) else "record"
 
 RECORDING_TEMPLATES = {
     "standard": """Hi, I'm [your name], and this is my natural speaking voice. The quick brown fox jumps over the lazy dog. How vexingly quick daft zebras jump! Did it capture the real me?""",
@@ -233,12 +234,13 @@ app_ui = ui.page_fluid(
 
                 function sonaStartRecording() {
                     const nameInput = document.getElementById('voice_name');
-                    if (!nameInput || !nameInput.value.trim()) {
-                        setStatus('Enter a voice name before recording.');
-                        if (typeof Shiny !== 'undefined' && Shiny.notifications) {
-                            Shiny.notifications.show({ html: 'Enter a voice name before recording.', type: 'warning' });
-                        }
-                        return;
+                    if (!nameInput) return;
+                    if (!sanitizeName(nameInput.value)) {
+                        const now = new Date();
+                        const pad = function(n) { return String(n).padStart(2, '0'); };
+                        nameInput.value = 'voice-' + pad(now.getMonth() + 1) + pad(now.getDate())
+                            + '-' + pad(now.getHours()) + pad(now.getMinutes());
+                        nameInput.dispatchEvent(new Event('change', { bubbles: true }));
                     }
                     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
                         setStatus('Recording is not supported in this browser.');
@@ -388,8 +390,17 @@ app_ui = ui.page_fluid(
                     if (recordingScript && window.matchMedia('(max-width: 620px)').matches) {
                         recordingScript.open = false;
                     }
-                    const preview = document.getElementById('reference_preview');
-                    if (!preview) return;
+                    const result = document.getElementById('audio_result');
+                    if (result) {
+                        let previousResult = null;
+                        new MutationObserver(function() {
+                            const source = result.querySelector('audio')?.getAttribute('src') || null;
+                            if (source && source !== previousResult) {
+                                result.closest('.output-pane')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                            }
+                            previousResult = source;
+                        }).observe(result, { childList: true, subtree: true });
+                    }
                     const script = document.getElementById('speech_text');
                     if (script) {
                         script.setAttribute('aria-label', 'Script to synthesize');
@@ -399,14 +410,6 @@ app_ui = ui.page_fluid(
                             script.setAttribute('aria-invalid', String(invalid));
                         });
                     }
-                    let previousSource = null;
-                    new MutationObserver(function() {
-                        const source = preview.querySelector('audio')?.getAttribute('src') || null;
-                        if (source !== previousSource) {
-                            document.getElementById('voice-setup').open = !source;
-                            previousSource = source;
-                        }
-                    }).observe(preview, { childList: true, subtree: true });
                 });
 
                 document.addEventListener('keydown', function(e) {
@@ -455,27 +458,27 @@ app_ui = ui.page_fluid(
                     {"class": "reference-pane", "aria-labelledby": "reference-heading"},
                     ui.h2(
                         {"class": "section-title", "id": "reference-heading"},
-                        "Voice reference",
+                        ui.span("1", class_="step-num"),
+                        "Choose a voice",
                     ),
                     ui.p(
-                        "Record yourself, upload a file, or pick a saved voice. "
-                        "The first 12 seconds create the voice profile.",
+                        "Pick a saved voice, record a new one, or upload a file. "
+                        "Use 5 to 12 seconds of clear speech.",
                         class_="section-copy",
                     ),
-                    ui.output_ui("reference_preview"),
-                    ui.tags.details(
-                        ui.tags.summary("Change voice", class_="voice-setup-summary"),
+                    ui.div(
+                        {"class": "voice-setup"},
                         ui.div(
                             {"class": "ref-mode-selector"},
                             ui.input_radio_buttons(
                                 "ref_mode",
                                 None,
                                 choices={
+                                    "library": "Saved voices",
                                     "record": "Record",
                                     "upload": "Upload",
-                                    "library": "Saved voices",
                                 },
-                                selected="record",
+                                selected=DEFAULT_REF_MODE,
                                 inline=True,
                             ),
                         ),
@@ -488,7 +491,7 @@ app_ui = ui.page_fluid(
                                     ui.input_text(
                                         "voice_name",
                                         "Voice name",
-                                        placeholder="e.g. my-voice",
+                                        placeholder="Optional, e.g. my-voice",
                                         width="100%",
                                     ),
                                 ),
@@ -568,118 +571,127 @@ app_ui = ui.page_fluid(
                                 ),
                             ),
                         ),
-                        id="voice-setup", open=True,
                     ),
+                    ui.output_ui("reference_preview"),
                     ui.output_ui("reference_transcript_section"),
                 ),
-                ui.tags.section(
-                    {"class": "script-pane", "aria-labelledby": "script-heading"},
-                    ui.h2(
-                        {"class": "section-title", "id": "script-heading"},
-                            "Script",
-                    ),
-                    ui.p(
-                        "Enter the text you want to synthesize with your cloned voice.",
-                        class_="section-copy",
-                    ),
-                    ui.input_text_area(
-                        "speech_text",
-                        None,
-                        value="Hello! If you're hearing this, it means the voice clone worked. Every word you're hearing was spoken by a computer, in my voice, running entirely on this Mac. Pretty wild, right?",
-                        placeholder="Write the words you want the cloned voice to speak…",
-                        rows=9,
-                        width="100%",
-                    ),
-                    ui.div(
-                        {"class": "field-footer"},
-                        ui.span("Natural punctuation helps shape the delivery."),
-                        ui.output_text("character_count", inline=True),
-                    ),
-                    ui.input_select("engine", "Voice engine", choices=ENGINES, selected="qwen"),
-                    ui.panel_conditional(
-                        "input.engine === 'omnivoice'",
-                        ui.p("OmniVoice supports 600+ languages. The first use downloads its voice model. "
-                             "High fidelity uses 32 steps; Fast draft uses 16. "
-                             "Use a 3–10 second reference for best results."),
-                        ui.input_text("omni_language", "Output language (name or code)",
-                                      value="auto", placeholder="auto, Hindi, ar, …"),
-                    ),
-                    ui.div(
-                        {"class": "delivery-controls"},
+                ui.div(
+                    {"class": "main-column"},
+                    ui.tags.section(
+                        {"class": "script-pane", "aria-labelledby": "script-heading"},
+                        ui.h2(
+                            {"class": "section-title", "id": "script-heading"},
+                            ui.span("2", class_="step-num"),
+                            "Write your script",
+                        ),
+                        ui.p(
+                            "Type the words for the cloned voice to say. Each new line adds a short pause.",
+                            class_="section-copy",
+                        ),
+                        ui.input_text_area(
+                            "speech_text",
+                            None,
+                            value="Hello! If you're hearing this, it means the voice clone worked. Every word you're hearing was spoken by a computer, in my voice, running entirely on this Mac. Pretty wild, right?",
+                            placeholder="Write the words you want the cloned voice to speak…",
+                            rows=9,
+                            width="100%",
+                        ),
                         ui.div(
-                            {"class": "quality-options", "title": "High fidelity prioritizes quality. Fast draft uses a smaller Qwen model or fewer OmniVoice generation steps."},
-                            ui.input_radio_buttons(
-                                "quality",
-                                "Model quality",
+                            {"class": "field-footer"},
+                            ui.span("Natural punctuation helps shape the delivery."),
+                            ui.output_text("character_count", inline=True),
+                        ),
+                        ui.div(
+                            {"class": "delivery-controls"},
+                            ui.input_select("engine", "Voice engine", choices=ENGINES, selected="qwen"),
+                            ui.div(
+                                {"class": "quality-options", "title": "High fidelity prioritizes quality. Fast draft uses a smaller Qwen model or fewer OmniVoice generation steps."},
+                                ui.input_radio_buttons(
+                                    "quality",
+                                    "Model quality",
+                                    choices={
+                                        "high": "High fidelity",
+                                        "fast": "Fast draft",
+                                    },
+                                    selected="high",
+                                    inline=True,
+                                ),
+                            ),
+                            ui.panel_conditional("input.engine === 'qwen'", ui.input_select(
+                                "language",
+                                "Output language",
                                 choices={
-                                    "high": "High fidelity",
-                                    "fast": "Fast draft",
+                                    "auto": "Auto detect",
+                                    "English": "English",
+                                    "Spanish": "Spanish",
+                                    "French": "French",
+                                    "German": "German",
+                                    "Italian": "Italian",
+                                    "Portuguese": "Portuguese",
+                                    "Chinese": "Chinese",
+                                    "Japanese": "Japanese",
+                                    "Korean": "Korean",
+                                    "Russian": "Russian",
                                 },
-                                selected="high",
-                                inline=True,
+                                selected="auto",
+                            )),
+                            ui.panel_conditional(
+                                "input.engine === 'omnivoice'",
+                                ui.input_text("omni_language", "Output language",
+                                              value="auto", placeholder="auto, Hindi, ar, …"),
                             ),
                         ),
-                        ui.panel_conditional("input.engine === 'qwen'", ui.input_select(
-                            "language",
-                            "Output language",
-                            choices={
-                                "auto": "Auto detect",
-                                "English": "English",
-                                "Spanish": "Spanish",
-                                "French": "French",
-                                "German": "German",
-                                "Italian": "Italian",
-                                "Portuguese": "Portuguese",
-                                "Chinese": "Chinese",
-                                "Japanese": "Japanese",
-                                "Korean": "Korean",
-                                "Russian": "Russian",
-                            },
-                            selected="auto",
-                        )),
+                        ui.panel_conditional(
+                            "input.engine === 'omnivoice'",
+                            ui.p(
+                                "OmniVoice supports more than 600 languages. The first use downloads its model. "
+                                "A reference of 3 to 10 seconds gives the best result.",
+                                class_="engine-note",
+                            ),
+                        ),
+                        ui.tags.section(
+                            {"class": "transport", "aria-label": "Audio generation progress"},
+                            ui.div(
+                                {"class": "transport-actions"},
+                                ui.input_action_button(
+                                    "btn_generate",
+                                    ui.TagList(
+                                        icon_svg("wave-square"),
+                                        "Create audio",
+                                        ui.span("⌘↵", class_="kbd-shortcut"),
+                                    ),
+                                    class_="btn-create w-100",
+                                    aria_describedby="generation_hint",
+                                ),
+                                ui.input_action_button(
+                                    "btn_cancel",
+                                    "Cancel generation",
+                                    class_="btn btn-outline-secondary btn-cancel w-100",
+                                    disabled=True,
+                                ),
+                                ui.div(
+                                    ui.output_text("generation_hint", inline=True),
+                                    ui.output_text("speech_duration", inline=True),
+                                    class_="generation-guidance",
+                                ),
+                            ),
+                            ui.output_ui("generation_progress"),
+                        ),
                     ),
                     ui.tags.section(
-                        {"class": "transport", "aria-label": "Audio generation progress"},
+                        {"class": "output-pane", "aria-labelledby": "output-heading"},
                         ui.div(
-                            {"class": "transport-actions"},
-                            ui.input_action_button(
-                                "btn_generate",
-                                ui.TagList(
-                                    icon_svg("wave-square"),
-                                    "Create audio",
-                                    ui.span("⌘↵", class_="kbd-shortcut"),
-                                ),
-                                class_="btn-create w-100",
-                                aria_describedby="generation_hint",
+                            {"class": "output-header"},
+                            ui.h2(
+                                {"class": "output-heading", "id": "output-heading"},
+                                ui.span("3", class_="step-num"),
+                                "Listen and download",
                             ),
-                            ui.input_action_button(
-                                "btn_cancel",
-                                "Cancel generation",
-                                class_="btn btn-outline-secondary btn-cancel w-100",
-                                disabled=True,
-                            ),
-                            ui.div(
-                                ui.output_text("generation_hint", inline=True),
-                                ui.output_text("speech_duration", inline=True),
-                                class_="generation-guidance",
-                            ),
+                            ui.output_ui("output_status"),
                         ),
-                        ui.output_ui("generation_progress"),
+                        ui.output_ui("audio_result"),
                     ),
                 ),
-            ),
-            ui.tags.section(
-                {"class": "output-pane", "aria-labelledby": "output-heading"},
-                ui.div(
-                    {"class": "output-header"},
-                    ui.h2(
-                        {"class": "output-heading", "id": "output-heading"},
-                        icon_svg("volume-high"),
-                        "Generated output",
-                    ),
-                    ui.output_ui("output_status"),
-                ),
-                ui.output_ui("audio_result"),
             ),
         ),
     ),
@@ -1318,8 +1330,7 @@ def server(input, output, session):
             report = None
 
         duration = report["duration_seconds"] if report else 0.0
-        sample_rate = report["sample_rate"] if report else 0
-        used = min(duration, 12.0)
+        caption = f"{duration:.1f}s sample"
 
         quality_pills = []
         if report is not None:
@@ -1331,21 +1342,13 @@ def server(input, output, session):
 
         return ui.div(
             {"class": "reference-file"},
-            ui.div({"class": "file-name"}, display_name),
-            ui.div(
-                {"class": "file-caption"},
-                f"{duration:.1f}s recording · first {used:.1f}s used",
-            ),
+            ui.div({"class": "reference-label"}, "Selected voice"),
+            ui.div({"class": "file-name"}, icon_svg("microphone-lines"), Path(display_name).stem),
+            ui.div({"class": "file-caption"}, caption),
             ui.tags.audio(
                 controls=True,
                 preload="metadata",
                 src=audio_url,
-            ),
-            ui.div(
-                {"class": "meta-list"},
-                ui.div({"class": "meta-row"}, ui.span("Format"), ui.span(Path(display_name).suffix.lstrip(".").upper() or "Audio")),
-                ui.div({"class": "meta-row"}, ui.span("Sample rate"), ui.span(f"{sample_rate:,} Hz")),
-                ui.div({"class": "meta-row"}, ui.span("Profile window"), ui.span(f"00:00 – 00:{used:04.1f}")),
             ),
             quality_feedback,
         )

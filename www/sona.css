@@ -119,7 +119,7 @@ body {
 }
 
 .brand, .privacy-note, .engine-pill,
-.section-title, .status-chip, .meta-row,
+.section-title, .status-chip,
 .transport-actions, .output-heading, .button-label {
     display: flex;
     align-items: center;
@@ -418,9 +418,6 @@ button:focus-visible, a:focus-visible, .btn-record:focus-visible, .btn-speed:foc
     height: 40px;
 }
 
-.meta-list { margin-top: 13px; border-top: 1px solid var(--border); padding-top: 9px; }
-.meta-row { justify-content: space-between; gap: 20px; padding: 5px 0; color: var(--muted); font-size: 12px; }
-.meta-row span:last-child { color: #e0dce8; font-variant-numeric: tabular-nums; }
 
 .quality-box { margin-top: 12px; padding: 11px 12px; border-radius: 10px; font-size: 12px; }
 .quality-good { border: 1px solid rgba(94,236,200,.3); color: var(--mint-soft); background: rgba(94,236,200,.06); }
@@ -1100,12 +1097,9 @@ label.control-label { text-transform: none; letter-spacing: 0; font-size: 13px; 
 .ref-mode-selector .radio-inline:has(input:focus-visible), .quality-options .radio-inline:has(input:focus-visible), .template-options .radio-inline:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
 .reference-empty { display: none; }
 .reference-file { margin: 0 0 18px; padding: 0; border: 0; background: transparent; box-shadow: none; }
-.reference-file .meta-list { display: none; }
 summary { cursor: pointer; color: var(--muted); font-size: 13px; font-weight: 600; padding: 10px 0; }
 summary:hover { color: var(--text); }
 summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; }
-#voice-setup[open] > summary { margin-bottom: 8px; }
-.reference-pane:not(:has(.reference-file)) .voice-setup-summary { display: none; }
 .transcript-card { padding: 4px 0 0; border: 0; border-top: 1px solid var(--border); border-radius: 0; background: transparent; box-shadow: none; }
 .transcript-card-header { flex-wrap: wrap; margin-top: 8px; }
 .transcript-title { display: none; }
@@ -1201,3 +1195,45 @@ button:disabled { cursor: not-allowed; opacity: .55; }
     .empty-waveform { gap: 3px; }
     .empty-waveform span { width: 2px; }
 }
+
+/* Guided three-step layout: choose a voice, write a script, listen. */
+.workspace { grid-template-columns: minmax(320px, 400px) minmax(0, 1fr); }
+.main-column { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.section-title, .output-heading { gap: 10px; font-size: 20px; font-weight: 700; letter-spacing: -.02em; margin: 0 0 6px; }
+.output-header { margin-bottom: 4px; }
+.step-num { min-width: 24px; height: 24px; padding: 0; font-size: 12px; letter-spacing: 0; }
+.voice-setup { margin-bottom: 4px; }
+.ref-mode-selector { margin: 0 0 16px; }
+.reference-file {
+    margin: 18px 0 0;
+    padding: 14px 16px 12px;
+    border: 1px solid rgba(94, 236, 200, 0.22);
+    border-radius: var(--radius-control);
+    background: rgba(94, 236, 200, 0.04);
+}
+.reference-label { color: var(--mint); font-size: 11px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; margin-bottom: 6px; }
+.reference-file .file-name { display: flex; align-items: center; gap: 8px; font-size: 15px; }
+.reference-file .file-name svg { width: 14px; height: 14px; fill: var(--mint); flex-shrink: 0; }
+.reference-file audio { margin: 10px 0 4px; }
+.transcript-card { margin-top: 14px; }
+.delivery-controls {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1fr);
+    gap: 16px;
+    margin-top: 20px;
+}
+.delivery-controls > .shiny-panel-conditional { min-width: 0; }
+.delivery-controls .shiny-input-container { width: 100% !important; }
+.quality-options .shiny-options-group { display: flex; }
+.quality-options .radio-inline { flex: 1; white-space: nowrap !important; }
+.engine-note { margin: 12px 0 0; color: var(--subtle); font-size: 12px; line-height: 1.5; }
+@media (max-width: 1100px) {
+    .delivery-controls { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+    .delivery-controls > .quality-options { grid-column: 1 / -1; order: 3; }
+}
+@media (max-width: 940px) {
+    .workspace { grid-template-columns: 1fr; }
+}
+@media (max-width: 620px) {
+    .delivery-controls { grid-template-columns: 1fr; }
+}
+#speech_text { min-height: 200px; field-sizing: content; max-height: 60vh; }
