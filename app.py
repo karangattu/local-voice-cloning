@@ -247,7 +247,13 @@ app_ui = ui.page_fluid(
                     document.getElementById("record-script").open = true;
                     isProcessing = true;
                     document.getElementById("btn-record").disabled = true;
-                    navigator.mediaDevices.getUserMedia({ audio: true })
+                    // Browser voice processing gates quiet speech; the clone copies those gaps.
+                    navigator.mediaDevices.getUserMedia({ audio: {
+                        echoCancellation: false,
+                        noiseSuppression: false,
+                        autoGainControl: false,
+                        channelCount: 1
+                    } })
                         .then(function(stream) {
                             mediaStream = stream;
                             audioContext = new (window.AudioContext || window.webkitAudioContext)();
