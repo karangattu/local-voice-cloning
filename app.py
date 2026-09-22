@@ -535,6 +535,7 @@ app_ui = ui.page_fluid(
                                     ui.div({"id": "record-progress-fill", "class": "record-progress-fill"}),
                                 ),
                                 ui.tags.div({"id": "record-status", "class": "record-status", "role": "status"}, "Ready"),
+                                ui.output_ui("recorded_take_actions"),
                             ),
                         ),
                         ui.panel_conditional(
@@ -1222,6 +1223,38 @@ def server(input, output, session):
         else:
             message = f"Voice saved · {name}"
         await session.send_custom_message("recording-status", {"text": message})
+
+    @render.ui
+    def recorded_take_actions():
+        library_refresh()
+        path = last_recorded_path()
+        if not path or not Path(path).exists():
+            return ui.div()
+        name = last_recorded_name() or "recording"
+        return ui.div(
+            {"class": "record-take"},
+            ui.span({"class": "record-take-name"}, icon_svg("file-audio"), f" Current take: {name}.wav"),
+            ui.input_action_button(
+                "btn_delete_take",
+                ui.TagList(icon_svg("trash"), " Delete take"),
+                class_="btn btn-outline-danger btn-sm btn-delete-voice",
+                title="Delete this take so you can record it again",
+            ),
+        )
+
+    @reactive.effect
+    @reactive.event(input.btn_delete_take)
+    async def _delete_take():
+        path = last_recorded_path()
+        if not path:
+            return
+        name = last_recorded_name() or "recording"
+        Path(path).unlink(missing_ok=True)
+        last_recorded_path.set(None)
+        last_recorded_name.set(None)
+        library_refresh.set(library_refresh() + 1)
+        ui.notification_show(f"Deleted take '{name}'.", type="message")
+        await session.send_custom_message("recording-status", {"text": "Ready for a new take"})
 
     @reactive.effect
     @reactive.event(input.btn_refresh_voices)

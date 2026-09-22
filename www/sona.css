@@ -780,6 +780,8 @@ button:focus-visible, a:focus-visible, .btn-record:focus-visible, .btn-speed:foc
     box-shadow: 0 0 6px rgba(251, 113, 133, 0.45);
 }
 .record-status { color: var(--subtle); font-size: 12px; margin-top: 7px; }
+.record-take { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
+.record-take-name { color: var(--muted); font-size: 12px; display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .library-panel { margin-top: 14px; }
 .library-controls { display: flex; gap: 9px; align-items: end; }

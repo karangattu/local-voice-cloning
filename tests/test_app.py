@@ -433,6 +433,11 @@ def test_uploaded_audio_preserves_mime_type_without_filename_extension(tmp_path)
     assert response.media_type == "audio/mpeg"
 
 
+def test_record_tab_has_slot_for_deleting_the_current_take():
+    rendered = str(app_ui)
+    assert 'id="recorded_take_actions"' in rendered
+
+
 def test_ui_contains_import_and_export_controls():
     rendered = str(app_ui)
     assert "import_voice_files" in rendered
