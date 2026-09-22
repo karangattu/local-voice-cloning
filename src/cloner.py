@@ -89,7 +89,13 @@ def validate_engine(engine: str) -> None:
 def _load_stt_model(model_id: str):
     from mlx_audio.stt.utils import load_model
 
-    return load_model(model_id)
+    model = load_model(model_id)
+    # Transformers skips this cleanup for Whisper's BPE tokenizer and logs a
+    # warning on each load. Turn it off to get the same text without the warning.
+    tokenizer = getattr(getattr(model, "_processor", None), "tokenizer", None)
+    if tokenizer is not None:
+        tokenizer.clean_up_tokenization_spaces = False
+    return model
 
 
 @dataclass
