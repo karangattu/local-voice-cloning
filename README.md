@@ -48,8 +48,8 @@ uv run python -m src.cli \
 
 Options:
 - `--quality`: `high` (default) or `fast`
-- `--language`: Target language (`auto` by default)
-- `--engine`: `qwen` (default) or `omnivoice`
+- `--language`: Output language. The default value is `auto`. Chatterbox accepts English only.
+- `--engine`: `qwen` (default), `omnivoice`, or `chatterbox`
 - `--ref-text`: Transcript of reference audio (transcribed automatically if omitted)
 
 ## REST API
@@ -69,6 +69,20 @@ curl -X POST http://127.0.0.1:8001/synthesize \
   -o output.wav
 ```
 
+The `/synthesize` endpoint accepts an `engine` field:
+
+```bash
+curl -X POST http://127.0.0.1:8001/synthesize \
+  -F "reference_audio=@voice_sample.wav" \
+  -F "text=Hello from the API" \
+  -F "engine=chatterbox" \
+  -o output.wav
+```
+
+## Voice engines
+
+Qwen3-TTS is the default engine. It runs on Apple MLX and needs no other package. OmniVoice supports more than 600 languages. It needs the `omnivoice` extra. Chatterbox clones English voices. It needs the `chatterbox-tts` package.
+
 ## Optional: OmniVoice (600+ Languages)
 
 To add voice cloning in 600+ languages:
@@ -79,6 +93,31 @@ uv run --extra omnivoice shiny run app.py
 ```
 
 Select **OmniVoice** under **Voice engine** in the app, or pass `--engine omnivoice` to the CLI or API.
+
+## Optional: Chatterbox (English, experimental)
+
+Chatterbox clones English voices. High fidelity uses the full model. Fast draft uses Chatterbox-Turbo.
+
+To use Chatterbox in the app:
+
+1. Install the package with `pip install chatterbox-tts`.
+2. Select **Chatterbox** under **Voice engine**.
+3. Write the script.
+4. Click **Create audio**.
+
+To use Chatterbox with the CLI or API instead, pass `--engine chatterbox`.
+
+The first run downloads about 3 GB of model files. If downloads are slow, set a `HF_TOKEN` for higher rate limits.
+
+`chatterbox-tts` pins `transformers==5.2.0` and `torch==2.6.0`. These versions conflict with the `transformers>=5.14.0` that `mlx-audio` needs. As a result, there is no `uv` extra for Chatterbox. If the package is not installed, the engine shows a clear error. The Qwen and OmniVoice engines keep working.
+
+If model loading stops with `TypeError: 'NoneType' object is not callable`, install an older setuptools:
+
+```bash
+pip install "setuptools<81"
+```
+
+Then start the app again.
 
 ## Tips for Best Results
 
