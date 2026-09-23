@@ -23,8 +23,13 @@ MAX_REFERENCE_SECONDS = 12.0
 MAX_SOURCE_SECONDS = 120.0
 LINE_BREAK_PAUSE_SECONDS = 0.4
 ENGINE_NAME = "Qwen3-TTS 1.7B"
-ENGINES = {"qwen": ENGINE_NAME, "omnivoice": "OmniVoice"}
+ENGINES = {"qwen": ENGINE_NAME, "omnivoice": "OmniVoice", "chatterbox": "Chatterbox"}
 OMNIVOICE_MODEL_ID = "k2-fsa/OmniVoice"
+CHATTERBOX_MODEL_IDS = {
+    "high": "ResembleAI/chatterbox",
+    "fast": "ResembleAI/chatterbox-turbo",
+}
+CHATTERBOX_LANGUAGES = ("auto", "English")
 ASR_MODEL_ID = "mlx-community/whisper-large-v3-turbo-asr-fp16"
 MODEL_VARIANTS = {
     "high": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",
@@ -79,6 +84,34 @@ def omnivoice_device() -> str:
     if torch.backends.mps.is_available():
         return "mps"
     return "cpu"
+
+
+def chatterbox_device() -> str:
+    import torch
+
+    if torch.cuda.is_available():
+        return "cuda:0"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def _load_chatterbox_model(model_id: str):
+    try:
+        device = chatterbox_device()
+        if model_id == CHATTERBOX_MODEL_IDS["fast"]:
+            from chatterbox.tts_turbo import ChatterboxTurboTTS
+
+            return ChatterboxTurboTTS.from_pretrained(device=device)
+        from chatterbox.tts import ChatterboxTTS
+
+        return ChatterboxTTS.from_pretrained(device=device)
+    except ImportError as exc:
+        raise RuntimeError(
+            "Chatterbox is not installed. Install it with: pip install chatterbox-tts "
+            "(note: its pinned dependencies conflict with mlx-audio, "
+            "so a separate environment may be needed)"
+        ) from exc
 
 
 def validate_engine(engine: str) -> None:
@@ -159,12 +192,24 @@ class LocalVoiceCloner:
         self.model_id = model_id_for_quality(quality)
         if engine == "omnivoice":
             self.model_id = OMNIVOICE_MODEL_ID
+        elif engine == "chatterbox":
+            self.model_id = CHATTERBOX_MODEL_IDS[quality]
         self.sample_rate = sample_rate
-        self.device = detect_device() if engine == "qwen" else omnivoice_device()
+        if engine == "qwen":
+            self.device = detect_device()
+        elif engine == "chatterbox":
+            self.device = chatterbox_device()
+        else:
+            self.device = omnivoice_device()
         self.engine_name = ENGINES[engine]
-        self._tts_loader = tts_loader or (
-            _load_tts_model if engine == "qwen" else _load_omnivoice_model
-        )
+        if tts_loader is not None:
+            self._tts_loader = tts_loader
+        elif engine == "qwen":
+            self._tts_loader = _load_tts_model
+        elif engine == "omnivoice":
+            self._tts_loader = _load_omnivoice_model
+        else:
+            self._tts_loader = _load_chatterbox_model
         self._stt_loader = stt_loader or _load_stt_model
         self._tts_model: Any | None = None
         self._stt_model: Any | None = None
@@ -179,10 +224,14 @@ class LocalVoiceCloner:
             with self._model_lock:
                 if self._tts_model is None:
                     self._tts_model = self._tts_loader(self.model_id)
+                    if self.engine == "omnivoice":
+                        attr = "sampling_rate"
+                    elif self.engine == "chatterbox":
+                        attr = "sr"
+                    else:
+                        attr = "sample_rate"
                     self.sample_rate = int(
-                        getattr(self._tts_model, "sampling_rate", self.sample_rate)
-                        if self.engine == "omnivoice"
-                        else getattr(self._tts_model, "sample_rate", self.sample_rate)
+                        getattr(self._tts_model, attr, self.sample_rate)
                     )
         return self._tts_model
 
@@ -242,6 +291,11 @@ class LocalVoiceCloner:
     ) -> SynthesisResult:
         if not text.strip():
             raise ValueError("Input text cannot be empty.")
+        if self.engine == "chatterbox" and language not in CHATTERBOX_LANGUAGES:
+            raise ValueError(
+                f"Unsupported Chatterbox language '{language}'. "
+                "Chatterbox supports English only ('auto' or 'English')."
+            )
 
         notify = progress_callback or (lambda _stage: None)
         notify("prepare")
@@ -265,7 +319,20 @@ class LocalVoiceCloner:
             sample_rate = self.sample_rate
             pieces: list[tuple[np.ndarray, float]] = []
             for segment, newline_count in _script_segments(text):
-                if self.engine == "omnivoice":
+                if self.engine == "chatterbox":
+                    wav = tts_model.generate(
+                        segment,
+                        audio_prompt_path=str(canonical_ref_path),
+                    )
+                    if hasattr(wav, "detach"):
+                        wav = wav.detach().cpu().numpy()
+                    generations = [
+                        SimpleNamespace(
+                            audio=np.asarray(wav),
+                            sample_rate=int(getattr(tts_model, "sr", self.sample_rate)),
+                        )
+                    ]
+                elif self.engine == "omnivoice":
                     audio = tts_model.generate(
                         text=segment,
                         ref_audio=str(canonical_ref_path),

@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 from src.audio_utils import save_audio
-from src.cloner import ENGINES, SUPPORTED_LANGUAGES, LocalVoiceCloner
+from src.cloner import CHATTERBOX_LANGUAGES, ENGINES, SUPPORTED_LANGUAGES, LocalVoiceCloner
 
 
 def parse_args(args=None):
@@ -56,7 +56,8 @@ def parse_args(args=None):
         "--quality",
         choices=["high", "fast"],
         default="high",
-        help="Quality: Qwen BF16/8-bit; OmniVoice 32/16 diffusion steps.",
+        help="Quality: Qwen BF16/8-bit; OmniVoice 32/16 diffusion steps; "
+        "Chatterbox full/Turbo.",
     )
     parser.add_argument(
         "--language",
@@ -78,6 +79,11 @@ def parse_args(args=None):
     parsed = parser.parse_args(args)
     if parsed.engine == "qwen" and parsed.language not in SUPPORTED_LANGUAGES:
         parser.error(f"Unsupported Qwen language: {parsed.language}")
+    if parsed.engine == "chatterbox" and parsed.language not in CHATTERBOX_LANGUAGES:
+        parser.error(
+            f"Unsupported Chatterbox language: {parsed.language}. "
+            "Chatterbox supports English only ('auto' or 'English')."
+        )
     return parsed
 
 

@@ -20,6 +20,8 @@ from fastapi.responses import Response
 
 from src.audio_utils import SUPPORTED_OUTPUT_FORMATS, save_audio
 from src.cloner import (
+    CHATTERBOX_LANGUAGES,
+    CHATTERBOX_MODEL_IDS,
     ENGINE_NAME,
     ENGINES,
     MODEL_VARIANTS,
@@ -36,9 +38,10 @@ MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
 app = FastAPI(
     title="Local Voice Cloning API",
-    description="Local voice cloning with Qwen3-TTS or optional OmniVoice. Upload a reference voice "
+    description="Local voice cloning with Qwen3-TTS, optional OmniVoice, or optional "
+    "Chatterbox. Upload a reference voice "
     "sample and text; receive synthesized speech as WAV or MP3.",
-    version="2.0.0",
+    version="2.1.0",
 )
 
 
@@ -58,6 +61,10 @@ def info():
         "engines": ENGINES,
         "omnivoice": {"model": "k2-fsa/OmniVoice", "quality_steps": {"high": 32, "fast": 16},
                       "languages": "600+; use a language name, code, or auto"},
+        "chatterbox": {"models": dict(sorted(CHATTERBOX_MODEL_IDS.items())),
+                       "quality_models": {"high": "Chatterbox full (English)",
+                                          "fast": "Chatterbox-Turbo (English)"},
+                       "languages": list(CHATTERBOX_LANGUAGES)},
         "device": detect_device(),
         "sample_rate": 24000,
         "default_quality": "high",
@@ -73,7 +80,7 @@ async def transcribe(
     reference_audio: Annotated[UploadFile, File(description="Voice sample to transcribe (wav/mp3/ogg/flac/m4a)")],
     quality: Annotated[
         str,
-        Form(description="Quality: Qwen BF16/8-bit; OmniVoice 32/16 steps"),
+        Form(description="Quality: Qwen BF16/8-bit; OmniVoice 32/16 steps; Chatterbox full/Turbo"),
     ] = "high",
 ):
     quality = quality.lower().strip()
@@ -119,7 +126,7 @@ async def synthesize(
     ] = 1.0,
     quality: Annotated[
         str,
-        Form(description="Quality: Qwen BF16/8-bit; OmniVoice 32/16 steps"),
+        Form(description="Quality: Qwen BF16/8-bit; OmniVoice 32/16 steps; Chatterbox full/Turbo"),
     ] = "high",
     language: Annotated[
         str,
@@ -134,7 +141,7 @@ async def synthesize(
         Form(ge=1.0, le=4.0, description="Deprecated F5-TTS option; accepted but ignored"),
     ] = 2.0,
     output_format: Annotated[str, Form(description="Output audio format: wav or mp3")] = "wav",
-    engine: Annotated[str, Form(description="Voice engine: qwen or omnivoice")] = "qwen",
+    engine: Annotated[str, Form(description="Voice engine: qwen, omnivoice, or chatterbox")] = "qwen",
 ):
     output_format = output_format.lower().lstrip(".")
     if output_format not in SUPPORTED_OUTPUT_FORMATS:
@@ -157,6 +164,12 @@ async def synthesize(
         raise HTTPException(
             status_code=422,
             detail=f"Unsupported language '{language}'.",
+        )
+    if engine == "chatterbox" and language not in CHATTERBOX_LANGUAGES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unsupported Chatterbox language '{language}'. "
+            "Chatterbox supports English only ('auto' or 'English').",
         )
     if not text.strip():
         raise HTTPException(status_code=422, detail="Field 'text' cannot be empty.")

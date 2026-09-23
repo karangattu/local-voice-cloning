@@ -605,7 +605,7 @@ app_ui = ui.page_fluid(
                             {"class": "delivery-controls"},
                             ui.input_select("engine", "Voice engine", choices=ENGINES, selected="qwen"),
                             ui.div(
-                                {"class": "quality-options", "title": "High fidelity prioritizes quality. Fast draft uses a smaller Qwen model or fewer OmniVoice generation steps."},
+                                {"class": "quality-options", "title": "High fidelity prioritizes quality. Fast draft uses a smaller Qwen model, fewer OmniVoice steps, or Chatterbox-Turbo."},
                                 ui.input_radio_buttons(
                                     "quality",
                                     "Model quality",
@@ -646,6 +646,15 @@ app_ui = ui.page_fluid(
                             ui.p(
                                 "OmniVoice supports more than 600 languages. The first use downloads its model. "
                                 "A reference of 3 to 10 seconds gives the best result.",
+                                class_="engine-note",
+                            ),
+                        ),
+                        ui.panel_conditional(
+                            "input.engine === 'chatterbox'",
+                            ui.p(
+                                "Chatterbox clones English voices; High fidelity uses the full model "
+                                "and Fast draft uses Chatterbox-Turbo. The first use downloads its model. "
+                                "A reference of 5 to 20 seconds gives the best result.",
                                 class_="engine-note",
                             ),
                         ),
@@ -1049,6 +1058,8 @@ def server(input, output, session):
         title = f"{ENGINE_NAME} · {label} · Apple MLX"
         if engine == "omnivoice":
             title = f"OmniVoice · {32 if quality == 'high' else 16} steps · PyTorch"
+        elif engine == "chatterbox":
+            title = f"Chatterbox · {'full' if quality == 'high' else 'Turbo'} · PyTorch"
         return ui.div(
             {"class": "engine-pill", "title": title},
             icon_svg("microchip"),
