@@ -1,4 +1,5 @@
 import os
+import re
 import tempfile
 import threading
 from collections.abc import Callable
@@ -61,9 +62,7 @@ def _load_omnivoice_model(model_id: str):
     try:
         from omnivoice import OmniVoice
     except ImportError as exc:
-        raise RuntimeError(
-            "OmniVoice is not installed. Run: uv sync --extra omnivoice"
-        ) from exc
+        raise RuntimeError("OmniVoice is not installed. Run: uv sync --extra omnivoice") from exc
     import torch
 
     device = omnivoice_device()
@@ -71,7 +70,8 @@ def _load_omnivoice_model(model_id: str):
         # Parallel weight conversion can crash PyTorch Metal kernels (Transformers #48029).
         os.environ["HF_DEACTIVATE_ASYNC_LOAD"] = "1"
     return OmniVoice.from_pretrained(
-        model_id, device_map=device,
+        model_id,
+        device_map=device,
         dtype=torch.float32 if device == "cpu" else torch.float16,
     )
 
@@ -140,6 +140,7 @@ class SynthesisResult:
 
 
 _SENTENCE_END = (".", "!", "?", ",", ";", ":", "…", "。", "！", "？")
+PAUSE_TAG_PATTERN = re.compile(r"\[(?:pause(?:\s*([\d.]+)\s*s?)?|break)\]", re.IGNORECASE)
 
 
 def prepare_gen_text(text: str) -> str:
@@ -149,18 +150,38 @@ def prepare_gen_text(text: str) -> str:
     return text
 
 
-def _script_segments(text: str) -> list[tuple[str, int]]:
-    segments: list[tuple[str, int]] = []
-    pending_newlines = 0
+def _script_segments(text: str) -> list[tuple[str, float]]:
+    segments: list[tuple[str, float]] = []
+    pending_pause = 0.0
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     for index, line in enumerate(normalized.split("\n")):
         if index:
-            pending_newlines += 1
-        prepared = prepare_gen_text(line)
-        if not prepared:
+            pending_pause += LINE_BREAK_PAUSE_SECONDS
+        matches = list(PAUSE_TAG_PATTERN.finditer(line))
+        if not matches:
+            prepared = prepare_gen_text(line)
+            if prepared:
+                segments.append((prepared, pending_pause if segments else 0.0))
+                pending_pause = 0.0
             continue
-        segments.append((prepared, pending_newlines if segments else 0))
-        pending_newlines = 0
+
+        last_pos = 0
+        for match in matches:
+            chunk = line[last_pos : match.start()]
+            prepared = prepare_gen_text(chunk)
+            if prepared:
+                segments.append((prepared, pending_pause if segments else 0.0))
+                pending_pause = 0.0
+            sec_str = match.group(1)
+            tag_pause = float(sec_str) if sec_str else LINE_BREAK_PAUSE_SECONDS
+            pending_pause = max(pending_pause, tag_pause)
+            last_pos = match.end()
+
+        tail = line[last_pos:]
+        prepared_tail = prepare_gen_text(tail)
+        if prepared_tail:
+            segments.append((prepared_tail, pending_pause if segments else 0.0))
+            pending_pause = 0.0
     return segments
 
 
@@ -230,9 +251,7 @@ class LocalVoiceCloner:
                         attr = "sr"
                     else:
                         attr = "sample_rate"
-                    self.sample_rate = int(
-                        getattr(self._tts_model, attr, self.sample_rate)
-                    )
+                    self.sample_rate = int(getattr(self._tts_model, attr, self.sample_rate))
         return self._tts_model
 
     def _ensure_stt_model(self):
@@ -318,7 +337,7 @@ class LocalVoiceCloner:
             notify("voice")
             sample_rate = self.sample_rate
             pieces: list[tuple[np.ndarray, float]] = []
-            for segment, newline_count in _script_segments(text):
+            for segment, segment_pause in _script_segments(text):
                 if self.engine == "chatterbox":
                     wav = tts_model.generate(
                         segment,
@@ -365,10 +384,12 @@ class LocalVoiceCloner:
                     if index:
                         pause = 0.08
                     else:
-                        pause = LINE_BREAK_PAUSE_SECONDS * newline_count if pieces else 0.0
+                        pause = segment_pause if pieces else 0.0
                     piece = np.asarray(item.audio).squeeze().astype(np.float32)
                     # Remove the model's near-silent edges; room tone fills the joins instead.
-                    piece = trim_silence(piece, sample_rate, threshold_db=-70.0, padding_seconds=0.0)
+                    piece = trim_silence(
+                        piece, sample_rate, threshold_db=-70.0, padding_seconds=0.0
+                    )
                     pieces.append((piece, pause))
             generated = join_with_room_tone(pieces, sample_rate)
 
@@ -405,3 +426,31 @@ def is_shared_cloner_loaded(quality: str | None = None, engine: str = "qwen") ->
         cloner = _shared_cloners.get((engine, quality))
         return bool(cloner and cloner.model_loaded)
     return any(cloner.model_loaded for cloner in _shared_cloners.values())
+
+
+def unload_shared_cloners() -> int:
+    with _shared_cloner_lock:
+        count = len(_shared_cloners)
+        _shared_cloners.clear()
+    import gc
+
+    gc.collect()
+    try:
+        import mlx.core as mx
+
+        if hasattr(mx, "clear_cache"):
+            mx.clear_cache()
+        elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
+            mx.metal.clear_cache()
+    except (ImportError, AttributeError):
+        pass
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        elif torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+    except (ImportError, AttributeError):
+        pass
+    return count

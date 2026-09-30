@@ -161,9 +161,7 @@ def test_prepare_gen_text_adds_final_stop():
     assert cloner_module.prepare_gen_text("") == ""
 
 
-def test_clone_voice_inserts_an_audible_pause_at_each_newline(
-    sample_voice_file, monkeypatch
-):
+def test_clone_voice_inserts_an_audible_pause_at_each_newline(sample_voice_file, monkeypatch):
     tts_model = ToneTTSModel()
     cloner = cloner_module.LocalVoiceCloner(
         tts_loader=lambda _model_id: tts_model,
@@ -208,3 +206,36 @@ def test_cloner_module_import_does_not_require_mlx(monkeypatch):
     imported = importlib.import_module("src.cloner")
 
     assert imported.ENGINE_NAME == "Qwen3-TTS 1.7B"
+
+
+def test_script_segments_with_inline_pause_and_breaks():
+    text = "Hello there [pause 0.8s] welcome to Sona [break] enjoy your stay."
+    segments = cloner_module._script_segments(text)
+    assert len(segments) == 3
+    assert segments[0] == ("Hello there.", 0.0)
+    assert segments[1] == ("welcome to Sona.", 0.8)
+    assert segments[2] == ("enjoy your stay.", 0.4)
+
+
+def test_script_segments_multiline():
+    text = "Line one\n\nLine two"
+    segments = cloner_module._script_segments(text)
+    assert len(segments) == 2
+    assert segments[0] == ("Line one.", 0.0)
+    assert segments[1] == ("Line two.", 0.8)
+
+
+def test_unload_shared_cloners():
+    import sys
+
+    cloner = sys.modules.get("src.cloner") or cloner_module
+    cloner._shared_cloners[("qwen", "test_high")] = cloner.LocalVoiceCloner(
+        tts_loader=lambda _: FakeTTSModel()
+    )
+    cloner._shared_cloners[("qwen", "test_fast")] = cloner.LocalVoiceCloner(
+        tts_loader=lambda _: FakeTTSModel()
+    )
+
+    count = cloner.unload_shared_cloners()
+    assert count >= 2
+    assert len(cloner._shared_cloners) == 0

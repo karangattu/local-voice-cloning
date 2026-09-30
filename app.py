@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import inspect
+import json
 import mimetypes
 import os
 import re
@@ -28,8 +29,7 @@ def _configure_shiny_port(
     try:
         args = sys.argv if argv is None else argv
         has_explicit_port = any(
-            arg in ("-p", "--port") or arg.startswith(("--port=", "-p="))
-            for arg in args
+            arg in ("-p", "--port") or arg.startswith(("--port=", "-p=")) for arg in args
         )
         if has_explicit_port:
             return None
@@ -65,9 +65,10 @@ from src.audio_utils import (
     apply_fades,
     load_audio,
     save_audio,
+    slice_audio,
     trim_silence,
 )
-from src.cloner import ENGINE_NAME, ENGINES, get_shared_cloner
+from src.cloner import ENGINE_NAME, ENGINES, get_shared_cloner, unload_shared_cloners
 from src.progress import progress_snapshot, run_with_progress
 
 VOICE_SAMPLES_DIR = Path(__file__).parent / "voice_samples"
@@ -81,6 +82,25 @@ RECORDING_TEMPLATES = {
 RECORDING_PROMPT = RECORDING_TEMPLATES["standard"]
 MAX_RECORDING_SECONDS = 30
 MAX_SCRIPT_CHARACTERS = 5000
+
+SCRIPT_PRESETS = {
+    "custom": "Choose a preset…",
+    "default": "Default Studio Demo",
+    "narration": "Audiobook Narration",
+    "podcast": "Podcast Intro",
+    "voicemail": "Voicemail Greeting",
+    "technical": "Technical Walkthrough",
+    "multilingual": "Multilingual Greeting",
+}
+
+SCRIPT_PRESET_TEXTS = {
+    "default": "Hello! If you're hearing this, it means the voice clone worked. Every word you're hearing was spoken by a computer, in my voice, running entirely on this Mac. Pretty wild, right?",
+    "narration": "The ship drifted silently through the rings of Saturn. Below them, ribbons of ice and dust reflected the pale light of a distant Sun. Captain Miller checked the navigational array one last time.",
+    "podcast": "Welcome back to the show. Today, we're diving deep into the world of local artificial intelligence, open-source audio models, and running generative voice models right on your laptop.",
+    "voicemail": "Hi, you've reached my voicemail. I can't take your call right now, but please leave your name, number, and a brief message after the tone. I'll get back to you as soon as I can.",
+    "technical": "To start the application, open your terminal and run 'uv run app.py'. The model will compile local Metal kernels on your Apple Silicon chip, enabling low-latency neural synthesis without an internet connection.",
+    "multilingual": "Bonjour! Hallo! Ciao! This is a test of multilingual synthesis running completely locally on this device.",
+}
 
 app_ui = ui.page_fluid(
     ui.tags.head(
@@ -223,6 +243,46 @@ app_ui = ui.page_fluid(
                     return new Blob([buffer], { type: 'audio/wav' });
                 }
 
+                let pendingTake = null;
+                window.sonaAcceptTake = function() {
+                    if (!pendingTake) return;
+                    setStatus('Processing...');
+                    if (typeof Shiny !== 'undefined') {
+                        Shiny.setInputValue('recorded_audio_data', pendingTake, {priority: 'event'});
+                    }
+                    const previewEl = document.getElementById('record-take-preview');
+                    if (previewEl) previewEl.style.display = 'none';
+                    pendingTake = null;
+                };
+
+                window.sonaDiscardTake = function() {
+                    pendingTake = null;
+                    const previewEl = document.getElementById('record-take-preview');
+                    if (previewEl) previewEl.style.display = 'none';
+                    const audioEl = document.getElementById('record-preview-audio');
+                    if (audioEl) { audioEl.pause(); audioEl.src = ''; }
+                    finishRecording('Ready for a new take');
+                };
+
+                function populateMicDevices() {
+                    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+                    navigator.mediaDevices.enumerateDevices().then(function(devices) {
+                        const select = document.getElementById('mic-device-select');
+                        if (!select) return;
+                        const audioInputs = devices.filter(function(d) { return d.kind === 'audioinput'; });
+                        if (audioInputs.length === 0) return;
+                        const currentVal = select.value;
+                        select.innerHTML = '<option value="">Default microphone</option>';
+                        audioInputs.forEach(function(dev, idx) {
+                            const opt = document.createElement('option');
+                            opt.value = dev.deviceId;
+                            opt.text = dev.label || ('Microphone ' + (idx + 1));
+                            if (dev.deviceId === currentVal) opt.selected = true;
+                            select.appendChild(opt);
+                        });
+                    }).catch(function() {});
+                }
+
                 window.sonaToggleRecording = function() {
                     if (isProcessing) return;
                     if (isRecording) {
@@ -249,13 +309,18 @@ app_ui = ui.page_fluid(
                     document.getElementById("record-script").open = true;
                     isProcessing = true;
                     document.getElementById("btn-record").disabled = true;
-                    // Browser voice processing gates quiet speech; the clone copies those gaps.
-                    navigator.mediaDevices.getUserMedia({ audio: {
+                    const micSelect = document.getElementById('mic-device-select');
+                    const audioConstraint = {
                         echoCancellation: false,
                         noiseSuppression: false,
                         autoGainControl: false,
                         channelCount: 1
-                    } })
+                    };
+                    if (micSelect && micSelect.value) {
+                        audioConstraint.deviceId = { exact: micSelect.value };
+                    }
+                    // Browser voice processing gates quiet speech; the clone copies those gaps.
+                    navigator.mediaDevices.getUserMedia({ audio: audioConstraint })
                         .then(function(stream) {
                             mediaStream = stream;
                             audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -281,10 +346,12 @@ app_ui = ui.page_fluid(
                                     var reader = new FileReader();
                                     reader.onload = function() {
                                         var name = sanitizeName(document.getElementById('voice_name').value);
-                                        if (typeof Shiny !== 'undefined') {
-                                            Shiny.setInputValue('recorded_audio_data', { data: reader.result, name: name }, {priority: 'event'});
-                                        }
-                                        setStatus('Processing...');
+                                        pendingTake = { data: reader.result, name: name };
+                                        const audioEl = document.getElementById('record-preview-audio');
+                                        if (audioEl) audioEl.src = URL.createObjectURL(wavBlob);
+                                        const previewEl = document.getElementById('record-take-preview');
+                                        if (previewEl) previewEl.style.display = 'block';
+                                        finishRecording('Audition your take below, then save or discard.');
                                     };
                                     reader.onerror = function() {
                                         finishRecording('Could not read recording. Please try again.');
@@ -383,6 +450,22 @@ app_ui = ui.page_fluid(
                 };
 
                 document.addEventListener('DOMContentLoaded', function() {
+                    populateMicDevices();
+                    if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+                        navigator.mediaDevices.addEventListener('devicechange', populateMicDevices);
+                    }
+                    document.addEventListener('click', function(e) {
+                        const waveform = e.target.closest('.audio-waveform');
+                        if (!waveform) return;
+                        const rect = waveform.getBoundingClientRect();
+                        const clickX = e.clientX - rect.left;
+                        const pct = Math.max(0, Math.min(1, clickX / rect.width));
+                        const player = waveform.closest('.output-surface')?.querySelector('audio');
+                        if (player && player.duration) {
+                            player.currentTime = pct * player.duration;
+                            player.play();
+                        }
+                    });
                     Shiny.addCustomMessageHandler('recording-status', function(message) {
                         finishRecording(message.text);
                     });
@@ -448,7 +531,16 @@ app_ui = ui.page_fluid(
                 icon_svg("shield-halved"),
                 "Private session · nothing leaves your Mac",
             ),
-            ui.output_ui("engine_badge"),
+            ui.div(
+                {"class": "header-actions"},
+                ui.output_ui("engine_badge"),
+                ui.input_action_button(
+                    "btn_unload_models",
+                    ui.TagList(icon_svg("trash-can"), " Free RAM"),
+                    class_="btn btn-sm btn-outline-secondary btn-memory-unload",
+                    title="Unload models from unified memory / GPU cache",
+                ),
+            ),
         ),
         ui.tags.main(
             {"class": "stage"},
@@ -495,6 +587,20 @@ app_ui = ui.page_fluid(
                                         width="100%",
                                     ),
                                 ),
+                                ui.div(
+                                    {"class": "mic-device-field"},
+                                    ui.tags.label(
+                                        "Microphone",
+                                        {"for": "mic-device-select", "class": "control-label"},
+                                    ),
+                                    ui.tags.select(
+                                        {
+                                            "id": "mic-device-select",
+                                            "class": "form-select mic-select",
+                                        },
+                                        ui.tags.option("Default microphone", value=""),
+                                    ),
+                                ),
                                 ui.tags.details(
                                     ui.tags.summary("Read-aloud script"),
                                     ui.div(
@@ -515,29 +621,94 @@ app_ui = ui.page_fluid(
                                         "Read this aloud at a natural pace:",
                                     ),
                                     ui.output_ui("recording_prompt_display"),
-                                    id="record-script", class_="record-script", open=True,
+                                    id="record-script",
+                                    class_="record-script",
+                                    open=True,
                                 ),
                                 ui.div(
                                     {"class": "record-controls"},
                                     ui.tags.button(
-                                        {"id": "btn-record", "type": "button", "class": "btn-record", "data-max-duration": str(MAX_RECORDING_SECONDS), "onclick": "sonaToggleRecording()"},
+                                        {
+                                            "id": "btn-record",
+                                            "type": "button",
+                                            "class": "btn-record",
+                                            "data-max-duration": str(MAX_RECORDING_SECONDS),
+                                            "onclick": "sonaToggleRecording()",
+                                        },
                                         " Start recording",
                                     ),
                                     ui.div(
-                                        {"id": "record-vu-meter", "class": "record-vu-meter", "aria-label": "Audio level"},
+                                        {
+                                            "id": "record-vu-meter",
+                                            "class": "record-vu-meter",
+                                            "aria-label": "Audio level",
+                                        },
                                         ui.tags.span({"class": "vu-bar"}),
                                         ui.tags.span({"class": "vu-bar"}),
                                         ui.tags.span({"class": "vu-bar"}),
                                         ui.tags.span({"class": "vu-bar"}),
                                         ui.tags.span({"class": "vu-bar"}),
                                     ),
-                                    ui.tags.span({"id": "record-timer", "class": "record-timer"}, "0:00"),
+                                    ui.tags.span(
+                                        {"id": "record-timer", "class": "record-timer"}, "0:00"
+                                    ),
                                 ),
                                 ui.div(
                                     {"class": "record-progress-track"},
-                                    ui.div({"id": "record-progress-fill", "class": "record-progress-fill"}),
+                                    ui.div(
+                                        {
+                                            "id": "record-progress-fill",
+                                            "class": "record-progress-fill",
+                                        }
+                                    ),
                                 ),
-                                ui.tags.div({"id": "record-status", "class": "record-status", "role": "status"}, "Ready"),
+                                ui.tags.div(
+                                    {
+                                        "id": "record-status",
+                                        "class": "record-status",
+                                        "role": "status",
+                                    },
+                                    "Ready",
+                                ),
+                                ui.div(
+                                    {
+                                        "id": "record-take-preview",
+                                        "class": "record-take-preview",
+                                        "style": "display: none;",
+                                    },
+                                    ui.div(
+                                        "Audition your recording before saving:",
+                                        class_="preview-caption",
+                                    ),
+                                    ui.tags.audio(
+                                        {
+                                            "id": "record-preview-audio",
+                                            "controls": "controls",
+                                            "class": "w-100",
+                                        }
+                                    ),
+                                    ui.div(
+                                        {"class": "preview-actions"},
+                                        ui.tags.button(
+                                            "✓ Accept & Save Take",
+                                            {
+                                                "id": "btn-accept-take",
+                                                "type": "button",
+                                                "class": "btn btn-sm btn-success",
+                                                "onclick": "sonaAcceptTake()",
+                                            },
+                                        ),
+                                        ui.tags.button(
+                                            "✕ Discard Take",
+                                            {
+                                                "id": "btn-discard-take",
+                                                "type": "button",
+                                                "class": "btn btn-sm btn-outline-danger",
+                                                "onclick": "sonaDiscardTake()",
+                                            },
+                                        ),
+                                    ),
+                                ),
                                 ui.output_ui("recorded_take_actions"),
                             ),
                         ),
@@ -579,14 +750,28 @@ app_ui = ui.page_fluid(
                     {"class": "main-column"},
                     ui.tags.section(
                         {"class": "script-pane", "aria-labelledby": "script-heading"},
-                        ui.h2(
-                            {"class": "section-title", "id": "script-heading"},
-                            ui.span("2", class_="step-num"),
-                            "Write your script",
-                        ),
-                        ui.p(
-                            "Type the words for the cloned voice to say. Each new line adds a short pause.",
-                            class_="section-copy",
+                        ui.div(
+                            {"class": "script-header-row"},
+                            ui.div(
+                                ui.h2(
+                                    {"class": "section-title", "id": "script-heading"},
+                                    ui.span("2", class_="step-num"),
+                                    "Write your script",
+                                ),
+                                ui.p(
+                                    "Type the words for the cloned voice to say. Use [pause 0.5s] or newlines to shape pauses.",
+                                    class_="section-copy",
+                                ),
+                            ),
+                            ui.div(
+                                {"class": "script-preset-field"},
+                                ui.input_select(
+                                    "script_preset",
+                                    "Preset template",
+                                    choices=SCRIPT_PRESETS,
+                                    selected="custom",
+                                ),
+                            ),
                         ),
                         ui.input_text_area(
                             "speech_text",
@@ -603,9 +788,14 @@ app_ui = ui.page_fluid(
                         ),
                         ui.div(
                             {"class": "delivery-controls"},
-                            ui.input_select("engine", "Voice engine", choices=ENGINES, selected="qwen"),
+                            ui.input_select(
+                                "engine", "Voice engine", choices=ENGINES, selected="qwen"
+                            ),
                             ui.div(
-                                {"class": "quality-options", "title": "High fidelity prioritizes quality. Fast draft uses a smaller Qwen model, fewer OmniVoice steps, or Chatterbox-Turbo."},
+                                {
+                                    "class": "quality-options",
+                                    "title": "High fidelity prioritizes quality. Fast draft uses a smaller Qwen model, fewer OmniVoice steps, or Chatterbox-Turbo.",
+                                },
                                 ui.input_radio_buttons(
                                     "quality",
                                     "Model quality",
@@ -617,28 +807,43 @@ app_ui = ui.page_fluid(
                                     inline=True,
                                 ),
                             ),
-                            ui.panel_conditional("input.engine === 'qwen'", ui.input_select(
-                                "language",
-                                "Output language",
-                                choices={
-                                    "auto": "Auto detect",
-                                    "English": "English",
-                                    "Spanish": "Spanish",
-                                    "French": "French",
-                                    "German": "German",
-                                    "Italian": "Italian",
-                                    "Portuguese": "Portuguese",
-                                    "Chinese": "Chinese",
-                                    "Japanese": "Japanese",
-                                    "Korean": "Korean",
-                                    "Russian": "Russian",
-                                },
-                                selected="auto",
-                            )),
+                            ui.input_slider(
+                                "synthesis_speed",
+                                "Speaking pace",
+                                min=0.6,
+                                max=1.5,
+                                value=1.0,
+                                step=0.05,
+                            ),
+                            ui.panel_conditional(
+                                "input.engine === 'qwen'",
+                                ui.input_select(
+                                    "language",
+                                    "Output language",
+                                    choices={
+                                        "auto": "Auto detect",
+                                        "English": "English",
+                                        "Spanish": "Spanish",
+                                        "French": "French",
+                                        "German": "German",
+                                        "Italian": "Italian",
+                                        "Portuguese": "Portuguese",
+                                        "Chinese": "Chinese",
+                                        "Japanese": "Japanese",
+                                        "Korean": "Korean",
+                                        "Russian": "Russian",
+                                    },
+                                    selected="auto",
+                                ),
+                            ),
                             ui.panel_conditional(
                                 "input.engine === 'omnivoice'",
-                                ui.input_text("omni_language", "Output language",
-                                              value="auto", placeholder="auto, Hindi, ar, …"),
+                                ui.input_text(
+                                    "omni_language",
+                                    "Output language",
+                                    value="auto",
+                                    placeholder="auto, Hindi, ar, …",
+                                ),
                             ),
                         ),
                         ui.panel_conditional(
@@ -699,6 +904,8 @@ app_ui = ui.page_fluid(
                             ui.output_ui("output_status"),
                         ),
                         ui.output_ui("audio_result"),
+                        ui.output_ui("session_history_ui"),
+                        ui.output_ui("ab_comparison_ui"),
                     ),
                 ),
             ),
@@ -729,9 +936,7 @@ def _saved_voice_path(selected: str, voices_dir: Path | None = None) -> Path | N
     if not isinstance(selected, str):
         return None
     dir_path = VOICE_SAMPLES_DIR if voices_dir is None else Path(voices_dir)
-    saved_names = {
-        path.stem for path in dir_path.glob("*.wav") if path.is_file()
-    }
+    saved_names = {path.stem for path in dir_path.glob("*.wav") if path.is_file()}
     if selected not in saved_names:
         return None
 
@@ -763,6 +968,59 @@ def create_voices_zip(
     return output_path
 
 
+def _load_voice_metadata(name: str, voices_dir: Path | None = None) -> dict:
+    if not isinstance(name, str):
+        return {}
+    dir_path = VOICE_SAMPLES_DIR if voices_dir is None else Path(voices_dir)
+    safe_name = _sanitize_voice_name(name)
+    if not safe_name:
+        return {}
+    json_path = dir_path / f"{safe_name}.json"
+    if json_path.is_file():
+        try:
+            return json.loads(json_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+    return {}
+
+
+def _save_voice_metadata(name: str, metadata: dict, voices_dir: Path | None = None) -> None:
+    if not isinstance(name, str):
+        return
+    dir_path = VOICE_SAMPLES_DIR if voices_dir is None else Path(voices_dir)
+    safe_name = _sanitize_voice_name(name)
+    if not safe_name:
+        return
+    existing = _load_voice_metadata(safe_name, dir_path)
+    existing.update(metadata)
+    json_path = dir_path / f"{safe_name}.json"
+    try:
+        json_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _rename_voice_profile(old_name: str, new_name: str, voices_dir: Path | None = None) -> str:
+    dir_path = VOICE_SAMPLES_DIR if voices_dir is None else Path(voices_dir)
+    clean_old = _sanitize_voice_name(old_name)
+    clean_new = _sanitize_voice_name(new_name)
+    if not clean_old or not clean_new:
+        raise ValueError("Invalid voice name for rename.")
+    old_wav = dir_path / f"{clean_old}.wav"
+    if not old_wav.is_file():
+        raise FileNotFoundError(f"Voice '{clean_old}' not found.")
+    new_wav = dir_path / f"{clean_new}.wav"
+    if new_wav.exists() and clean_old != clean_new:
+        raise FileExistsError(f"A voice named '{clean_new}' already exists.")
+
+    old_wav.rename(new_wav)
+    old_json = dir_path / f"{clean_old}.json"
+    new_json = dir_path / f"{clean_new}.json"
+    if old_json.is_file():
+        old_json.rename(new_json)
+    return clean_new
+
+
 def _process_and_save_voice_audio(
     source_path: Path,
     voice_name: str,
@@ -782,6 +1040,8 @@ def _process_and_save_voice_audio(
     audio_np = trim_silence(audio_np, sr)
     audio_np = apply_fades(audio_np, sr)
     save_audio(target_path, audio_np, sample_rate=sr)
+    dur = float(len(audio_np) / sr) if sr > 0 else 0.0
+    _save_voice_metadata(name, {"duration_seconds": dur, "sample_rate": sr}, voices_dir)
     return name
 
 
@@ -804,7 +1064,11 @@ def import_voice_file(
             with tempfile.TemporaryDirectory() as extract_dir:
                 ext_path = Path(extract_dir)
                 for idx, member in enumerate(zf.namelist()):
-                    if member.endswith("/") or member.startswith("__MACOSX/") or Path(member).name.startswith("."):
+                    if (
+                        member.endswith("/")
+                        or member.startswith("__MACOSX/")
+                        or Path(member).name.startswith(".")
+                    ):
                         continue
                     member_suffix = Path(member).suffix.lower()
                     if member_suffix not in allowed_suffixes:
@@ -849,11 +1113,18 @@ def resolve_reference_transcript(
     ref_id: str,
     cache: dict[str, str],
     pending: set[str],
+    voice_name: str | None = None,
+    voices_dir: Path | None = None,
 ) -> tuple[str, str, bool]:
     if not ref_id:
         return "", "idle", False
     if ref_id in cache:
         return cache[ref_id], "ready", False
+    if voice_name:
+        meta = _load_voice_metadata(voice_name, voices_dir)
+        transcript = meta.get("transcript", "").strip()
+        if transcript:
+            return transcript, "ready", False
     if ref_id in pending:
         return "", "transcribing", False
     return "", "transcribing", True
@@ -866,6 +1137,8 @@ def apply_transcription_result(
     current_ref_id: str,
     cache: dict[str, str],
     pending: set[str],
+    voice_name: str | None = None,
+    voices_dir: Path | None = None,
 ) -> tuple[dict[str, str], set[str], bool, str, str | None]:
     new_cache = dict(cache)
     new_pending = set(pending)
@@ -876,6 +1149,8 @@ def apply_transcription_result(
         if ref_id not in new_cache or not new_cache[ref_id].strip():
             new_cache[ref_id] = transcript
         resolved_text = new_cache[ref_id]
+        if voice_name:
+            _save_voice_metadata(voice_name, {"transcript": resolved_text}, voices_dir)
         return new_cache, new_pending, is_current, resolved_text, None
 
     resolved_text = new_cache.get(ref_id, "")
@@ -886,11 +1161,15 @@ def record_user_transcript_edit(
     ref_id: str,
     edited_text: str | None,
     cache: dict[str, str],
+    voice_name: str | None = None,
+    voices_dir: Path | None = None,
 ) -> dict[str, str]:
     if not ref_id or edited_text is None:
         return cache
     new_cache = dict(cache)
     new_cache[ref_id] = edited_text
+    if voice_name:
+        _save_voice_metadata(voice_name, {"transcript": edited_text}, voices_dir)
     return new_cache
 
 
@@ -952,6 +1231,8 @@ def server(input, output, session):
     pending_transcriptions = reactive.value(set())
     ref_transcript_value = reactive.value("")
     transcription_status = reactive.value("idle")
+    trimmed_reference_path = reactive.value(None)
+    session_takes = reactive.value([])
 
     @reactive.calc
     def active_reference():
@@ -975,6 +1256,20 @@ def server(input, output, session):
                     return (str(path), f"{selected}.wav")
         return None
 
+    @reactive.calc
+    def effective_reference():
+        trimmed = trimmed_reference_path()
+        if trimmed and Path(trimmed).exists():
+            orig = active_reference()
+            display = f"trimmed_{orig[1]}" if orig else "trimmed_sample.wav"
+            return (trimmed, display)
+        return active_reference()
+
+    @reactive.effect
+    @reactive.event(active_reference)
+    def _clear_trim_on_voice_change():
+        trimmed_reference_path.set(None)
+
     @reactive.extended_task
     async def run_transcription(audio_path: str, ref_id: str, quality: str):
         def work():
@@ -994,8 +1289,9 @@ def server(input, output, session):
             return
 
         ref_id, transcript, error = res
-        current_ref = active_reference()
+        current_ref = effective_reference()
         current_ref_id = get_reference_id(current_ref[0]) if current_ref else ""
+        voice_name = Path(current_ref[1]).stem if current_ref and current_ref[1] else None
 
         new_cache, new_pending, is_current, resolved_text, err = apply_transcription_result(
             ref_id,
@@ -1004,6 +1300,8 @@ def server(input, output, session):
             current_ref_id,
             transcript_cache(),
             pending_transcriptions(),
+            voice_name=voice_name,
+            voices_dir=VOICE_SAMPLES_DIR,
         )
         transcript_cache.set(new_cache)
         pending_transcriptions.set(new_pending)
@@ -1019,15 +1317,18 @@ def server(input, output, session):
                 ui.notification_show("Reference transcript ready for review.", type="message")
 
     @reactive.effect
-    @reactive.event(active_reference, ignore_init=False, ignore_none=False)
+    @reactive.event(effective_reference, ignore_init=False, ignore_none=False)
     def _sync_reference_transcript():
-        ref = active_reference()
+        ref = effective_reference()
         audio_path = ref[0] if ref else None
         ref_id = get_reference_id(audio_path)
+        voice_name = Path(ref[1]).stem if ref and ref[1] else None
         text, status, should_run = resolve_reference_transcript(
             ref_id,
             transcript_cache(),
             pending_transcriptions(),
+            voice_name=voice_name,
+            voices_dir=VOICE_SAMPLES_DIR,
         )
         ref_transcript_value.set(text)
         ui.update_text_area("ref_transcript", value=text)
@@ -1042,12 +1343,19 @@ def server(input, output, session):
     @reactive.effect
     @reactive.event(input.ref_transcript)
     def _save_user_transcript_edit():
-        ref = active_reference()
+        ref = effective_reference()
         if not ref:
             return
         ref_id = get_reference_id(ref[0])
+        voice_name = Path(ref[1]).stem if ref[1] else None
         text = input.ref_transcript()
-        new_cache = record_user_transcript_edit(ref_id, text, transcript_cache())
+        new_cache = record_user_transcript_edit(
+            ref_id,
+            text,
+            transcript_cache(),
+            voice_name=voice_name,
+            voices_dir=VOICE_SAMPLES_DIR,
+        )
         transcript_cache.set(new_cache)
 
     @render.ui
@@ -1070,7 +1378,7 @@ def server(input, output, session):
     def generation_hint():
         if run_synthesis.status() == "running":
             return "Creating your audio…"
-        if not active_reference():
+        if not effective_reference():
             return "Add a voice reference to continue."
         return script_validation_message(input.speech_text() or "") or "Ready when you are."
 
@@ -1162,6 +1470,12 @@ def server(input, output, session):
                 title="Rescan directory",
             ),
             ui.input_action_button(
+                "btn_rename_voice",
+                icon_svg("pen-to-square"),
+                class_="btn btn-outline-secondary btn-sm btn-rename-voice",
+                title="Rename selected voice",
+            ),
+            ui.input_action_button(
                 "btn_delete_voice",
                 icon_svg("trash"),
                 class_="btn btn-outline-danger btn-sm btn-delete-voice",
@@ -1191,12 +1505,16 @@ def server(input, output, session):
             last_name = total_imported[-1]
             ui.update_select("voice_library", selected=last_name)
             if len(total_imported) == 1:
-                ui.notification_show(f"Imported voice profile '{total_imported[0]}'.", type="message")
+                ui.notification_show(
+                    f"Imported voice profile '{total_imported[0]}'.", type="message"
+                )
             else:
                 summary = ", ".join(total_imported[:5])
                 if len(total_imported) > 5:
                     summary += f" and {len(total_imported) - 5} more"
-                ui.notification_show(f"Imported {len(total_imported)} voice profiles: {summary}.", type="message")
+                ui.notification_show(
+                    f"Imported {len(total_imported)} voice profiles: {summary}.", type="message"
+                )
 
         if errors:
             ui.notification_show(f"Import error: {'; '.join(errors)}", type="error")
@@ -1256,7 +1574,9 @@ def server(input, output, session):
         name = last_recorded_name() or "recording"
         return ui.div(
             {"class": "record-take"},
-            ui.span({"class": "record-take-name"}, icon_svg("file-audio"), f" Current take: {name}.wav"),
+            ui.span(
+                {"class": "record-take-name"}, icon_svg("file-audio"), f" Current take: {name}.wav"
+            ),
             ui.input_action_button(
                 "btn_delete_take",
                 ui.TagList(icon_svg("trash"), " Delete take"),
@@ -1293,13 +1613,87 @@ def server(input, output, session):
         path = _saved_voice_path(selected)
         if path:
             path.unlink()
+            path.with_suffix(".json").unlink(missing_ok=True)
             library_refresh.set(library_refresh() + 1)
             ui.notification_show(f"Deleted voice profile '{selected}'.", type="message")
 
     @reactive.effect
+    @reactive.event(input.btn_rename_voice)
+    def _show_rename_modal():
+        selected = input.voice_library() or ""
+        if not selected:
+            return
+        m = ui.modal(
+            ui.input_text("new_voice_name", "New voice name", value=selected),
+            ui.input_action_button("btn_confirm_rename", "Rename", class_="btn btn-primary"),
+            title=f"Rename voice '{selected}'",
+            easy_close=True,
+            footer=None,
+        )
+        ui.modal_show(m)
+
+    @reactive.effect
+    @reactive.event(input.btn_confirm_rename)
+    def _confirm_rename():
+        selected = input.voice_library() or ""
+        new_name = (input.new_voice_name() or "").strip()
+        if not selected or not new_name:
+            return
+        try:
+            clean_new = _rename_voice_profile(selected, new_name, VOICE_SAMPLES_DIR)
+            ui.modal_remove()
+            library_refresh.set(library_refresh() + 1)
+            ui.update_select("voice_library", selected=clean_new)
+            ui.notification_show(f"Renamed voice to '{clean_new}'.", type="message")
+        except Exception as exc:  # noqa: BLE001
+            ui.notification_show(f"Rename failed: {exc}", type="error")
+
+    @reactive.effect
+    @reactive.event(input.script_preset)
+    def _apply_script_preset():
+        choice = input.script_preset()
+        if choice and choice in SCRIPT_PRESET_TEXTS:
+            ui.update_text_area("speech_text", value=SCRIPT_PRESET_TEXTS[choice])
+
+    @reactive.effect
+    @reactive.event(input.btn_unload_models)
+    def _unload_models():
+        count = unload_shared_cloners()
+        if count:
+            ui.notification_show(f"Freed {count} model(s) from memory.", type="message")
+        else:
+            ui.notification_show("No models currently in memory.", type="message")
+
+    @reactive.effect
+    @reactive.event(input.btn_apply_trim)
+    def _apply_trim():
+        ref = active_reference()
+        if not ref:
+            return
+        datapath = ref[0]
+        start = float(input.ref_trim_start() or 0.0)
+        end = float(input.ref_trim_end() or 12.0)
+        if start >= end:
+            ui.notification_show("Start time must be less than end time.", type="warning")
+            return
+        target = session_dir / f"trimmed_{Path(datapath).name}"
+        try:
+            slice_audio(datapath, start_sec=start, end_sec=end, output_path=target)
+            trimmed_reference_path.set(str(target))
+            ui.notification_show(f"Trimmed reference to {end - start:.1f}s.", type="message")
+        except Exception as exc:  # noqa: BLE001
+            ui.notification_show(f"Trim failed: {exc}", type="error")
+
+    @reactive.effect
+    @reactive.event(input.btn_reset_trim)
+    def _reset_trim():
+        trimmed_reference_path.set(None)
+        ui.notification_show("Reset to original reference sample.", type="message")
+
+    @reactive.effect
     @reactive.event(input.btn_retranscribe)
     def _handle_retranscribe():
-        ref = active_reference()
+        ref = effective_reference()
         if not ref:
             ui.notification_show("No reference audio loaded to transcribe.", type="warning")
             return
@@ -1327,7 +1721,8 @@ def server(input, output, session):
                 ui.span("Record, upload, or select a saved voice to begin."),
             )
 
-        datapath, display_name = ref
+        eff_ref = effective_reference()
+        datapath, display_name = eff_ref
         audio_url = session.dynamic_route(
             "reference-audio",
             lambda request: audio_file_response(
@@ -1342,14 +1737,56 @@ def server(input, output, session):
 
         duration = report["duration_seconds"] if report else 0.0
         caption = f"{duration:.1f}s sample"
+        if trimmed_reference_path():
+            caption += " (trimmed)"
 
         quality_pills = []
+        if trimmed_reference_path():
+            quality_pills.append(
+                ui.span({"class": "quality-pill good"}, icon_svg("scissors"), "Trim active")
+            )
         if report is not None:
             if not report["warnings"]:
-                quality_pills.append(ui.span({"class": "quality-pill good"}, icon_svg("circle-check"), "Clean levels"))
+                quality_pills.append(
+                    ui.span(
+                        {"class": "quality-pill good"}, icon_svg("circle-check"), "Clean levels"
+                    )
+                )
             for w in report["warnings"]:
-                quality_pills.append(ui.span({"class": "quality-pill warn"}, icon_svg("triangle-exclamation"), w))
-        quality_feedback = ui.div({"class": "quality-pill-group"}, *quality_pills) if quality_pills else ui.div()
+                quality_pills.append(
+                    ui.span({"class": "quality-pill warn"}, icon_svg("triangle-exclamation"), w)
+                )
+        quality_feedback = (
+            ui.div({"class": "quality-pill-group"}, *quality_pills) if quality_pills else ui.div()
+        )
+
+        trim_card = ui.tags.details(
+            ui.tags.summary("Trim reference sample (optional)"),
+            ui.div(
+                {"class": "ref-trim-box"},
+                ui.div(
+                    {"class": "trim-inputs"},
+                    ui.input_numeric("ref_trim_start", "Start (s)", value=0.0, min=0.0, step=0.5),
+                    ui.input_numeric(
+                        "ref_trim_end",
+                        "End (s)",
+                        value=round(min(12.0, max(0.5, duration)), 1),
+                        min=0.5,
+                        step=0.5,
+                    ),
+                ),
+                ui.div(
+                    {"class": "trim-btn-row"},
+                    ui.input_action_button(
+                        "btn_apply_trim", "Apply Trim", class_="btn btn-sm btn-outline-secondary"
+                    ),
+                    ui.input_action_button(
+                        "btn_reset_trim", "Reset", class_="btn btn-sm btn-outline-secondary"
+                    ),
+                ),
+            ),
+            class_="trim-details",
+        )
 
         return ui.div(
             {"class": "reference-file"},
@@ -1362,17 +1799,20 @@ def server(input, output, session):
                 src=audio_url,
             ),
             quality_feedback,
+            trim_card,
         )
 
     @render.ui
     def reference_transcript_section():
-        ref = active_reference()
+        ref = effective_reference()
         if not ref:
             return ui.div()
 
         status = transcription_status()
         if status == "transcribing":
-            status_badge = ui.span({"class": "transcript-status transcribing"}, icon_svg("spinner"), "Transcribing...")
+            status_badge = ui.span(
+                {"class": "transcript-status transcribing"}, icon_svg("spinner"), "Transcribing..."
+            )
             content = ui.div(
                 {"class": "transcript-shimmer"},
                 ui.div({"class": "shimmer-line"}),
@@ -1380,7 +1820,9 @@ def server(input, output, session):
             )
             action_buttons = []
         elif status == "ready":
-            status_badge = ui.span({"class": "transcript-status ready"}, icon_svg("circle-check"), "Ready for review")
+            status_badge = ui.span(
+                {"class": "transcript-status ready"}, icon_svg("circle-check"), "Ready for review"
+            )
             content = ui.input_text_area(
                 "ref_transcript",
                 None,
@@ -1406,7 +1848,11 @@ def server(input, output, session):
                 ),
             ]
         elif status == "error":
-            status_badge = ui.span({"class": "transcript-status"}, icon_svg("triangle-exclamation"), "Transcription failed")
+            status_badge = ui.span(
+                {"class": "transcript-status"},
+                icon_svg("triangle-exclamation"),
+                "Transcription failed",
+            )
             content = ui.input_text_area(
                 "ref_transcript",
                 None,
@@ -1468,12 +1914,14 @@ def server(input, output, session):
         quality: str,
         language: str,
         engine: str,
+        speed: float = 1.0,
     ):
         def work(report):
             result = get_shared_cloner(quality, engine=engine).clone_voice(
                 reference_audio_path=ref_path,
                 text=text,
                 reference_text=ref_text,
+                speed=speed,
                 language=language,
                 progress_callback=report,
             )
@@ -1490,7 +1938,7 @@ def server(input, output, session):
     def handle_synthesis():
         if run_synthesis.status() == "running":
             return
-        ref = active_reference()
+        ref = effective_reference()
         text = input.speech_text() or ""
         if not ref:
             ui.notification_show("Add a reference recording before creating audio.", type="warning")
@@ -1501,6 +1949,7 @@ def server(input, output, session):
             return
 
         ref_text = (input.ref_transcript() or "").strip()
+        speed = float(input.synthesis_speed() or 1.0)
 
         output_audio_path.set(None)
         generation_stage.set("prepare")
@@ -1510,9 +1959,10 @@ def server(input, output, session):
             text,
             ref_text,
             input.quality() or "high",
-            (input.omni_language() if input.engine() == "omnivoice"
-             else input.language()) or "auto",
+            (input.omni_language() if input.engine() == "omnivoice" else input.language())
+            or "auto",
             input.engine() or "qwen",
+            speed,
         )
 
     @reactive.effect
@@ -1525,7 +1975,9 @@ def server(input, output, session):
     def _toggle_buttons():
         running = run_synthesis.status() == "running"
         invalid = bool(script_validation_message(input.speech_text() or ""))
-        ui.update_action_button("btn_generate", disabled=running or invalid or not active_reference())
+        ui.update_action_button(
+            "btn_generate", disabled=running or invalid or not effective_reference()
+        )
         ui.update_action_button("btn_cancel", disabled=not running)
 
     @reactive.effect
@@ -1536,6 +1988,23 @@ def server(input, output, session):
         output_waveform.set(waveform)
         output_audio_path.set(path)
         ui.notification_show("Your cloned voice is ready.", type="message")
+
+        _, duration = waveform
+        current_ref = effective_reference()
+        voice_label = Path(current_ref[1]).stem if current_ref else "custom"
+        text = (input.speech_text() or "").strip()
+        take_info = {
+            "id": uuid.uuid4().hex[:6],
+            "time": time.strftime("%H:%M:%S"),
+            "voice": voice_label,
+            "engine": input.engine() or "qwen",
+            "quality": input.quality() or "high",
+            "speed": float(input.synthesis_speed() or 1.0),
+            "duration": duration,
+            "snippet": (text[:60] + "…") if len(text) > 60 else text,
+            "path": path,
+        }
+        session_takes.set([take_info] + session_takes()[:9])
 
     @reactive.effect
     def _report_error():
@@ -1550,7 +2019,9 @@ def server(input, output, session):
             return None
         stage = generation_stage()
         snapshot = progress_snapshot(stage, status)
-        active_index = next((index for index, item in enumerate(snapshot) if item.state in {"active", "error"}), 0)
+        active_index = next(
+            (index for index, item in enumerate(snapshot) if item.state in {"active", "error"}), 0
+        )
         if status == "success":
             fill_width = 80
             message, detail = "Audio ready", "The cloned voice is ready to play and download."
@@ -1634,21 +2105,25 @@ def server(input, output, session):
             return ui.div(
                 {"class": "output-surface output-empty"},
                 ui.div(
-                    *(ui.span(style=f"height: {height}px") for height in
-                      (8, 14, 22, 12, 30, 38, 20, 32, 16, 26, 12, 8)),
-                    class_="empty-waveform", aria_hidden="true",
+                    *(
+                        ui.span(style=f"height: {height}px")
+                        for height in (8, 14, 22, 12, 30, 38, 20, 32, 16, 26, 12, 8)
+                    ),
+                    class_="empty-waveform",
+                    aria_hidden="true",
                 ),
                 ui.div(
                     ui.strong("Your audio will appear here"),
-                    ui.div("Playback and downloads unlock when generation finishes.", class_="file-caption"),
+                    ui.div(
+                        "Playback and downloads unlock when generation finishes.",
+                        class_="file-caption",
+                    ),
                 ),
             )
 
         wav_path = Path(path)
         mp3_path = wav_path.with_suffix(".mp3")
-        wav_url = session.dynamic_route(
-            "output-wav", lambda request: audio_file_response(wav_path)
-        )
+        wav_url = session.dynamic_route("output-wav", lambda request: audio_file_response(wav_path))
         wav_download = session.dynamic_route(
             "download-wav",
             lambda request: audio_file_response(wav_path, "cloned_voice_output.wav"),
@@ -1660,7 +2135,9 @@ def server(input, output, session):
             f'width="3" height="{max(2, peak / maximum * 60):.2f}" rx="1.5" />'
             for index, peak in enumerate(peaks)
         )
-        waveform = ui.HTML(f'<svg viewBox="0 0 600 64" preserveAspectRatio="none" aria-hidden="true">{bars}</svg>')
+        waveform = ui.HTML(
+            f'<svg viewBox="0 0 600 64" preserveAspectRatio="none" aria-hidden="true">{bars}</svg>'
+        )
 
         buttons = [
             ui.tags.a(
@@ -1688,7 +2165,11 @@ def server(input, output, session):
 
         return ui.div(
             {"class": "output-surface"},
-            ui.div(ui.strong("Your voice, rendered"), ui.span(f"{duration:.1f}s", class_="audio-duration"), class_="result-title"),
+            ui.div(
+                ui.strong("Your voice, rendered"),
+                ui.span(f"{duration:.1f}s", class_="audio-duration"),
+                class_="result-title",
+            ),
             ui.div(waveform, class_="audio-waveform"),
             ui.div(
                 {"class": "result-player"},
@@ -1703,11 +2184,121 @@ def server(input, output, session):
             ui.div(
                 {"class": "speed-control-group"},
                 ui.span("Playback speed:", class_="speed-label"),
-                ui.tags.button("0.8×", type="button", class_="btn-speed", onclick="sonaSetSpeed(this, 0.8)"),
-                ui.tags.button("1.0×", type="button", class_="btn-speed active", onclick="sonaSetSpeed(this, 1.0)"),
-                ui.tags.button("1.25×", type="button", class_="btn-speed", onclick="sonaSetSpeed(this, 1.25)"),
-                ui.tags.button("1.5×", type="button", class_="btn-speed", onclick="sonaSetSpeed(this, 1.5)"),
+                ui.tags.button(
+                    "0.8×", type="button", class_="btn-speed", onclick="sonaSetSpeed(this, 0.8)"
+                ),
+                ui.tags.button(
+                    "1.0×",
+                    type="button",
+                    class_="btn-speed active",
+                    onclick="sonaSetSpeed(this, 1.0)",
+                ),
+                ui.tags.button(
+                    "1.25×", type="button", class_="btn-speed", onclick="sonaSetSpeed(this, 1.25)"
+                ),
+                ui.tags.button(
+                    "1.5×", type="button", class_="btn-speed", onclick="sonaSetSpeed(this, 1.5)"
+                ),
             ),
+        )
+
+    @render.ui
+    def session_history_ui():
+        takes = session_takes()
+        if not takes:
+            return ui.div()
+
+        take_nodes = []
+        for index, take in enumerate(takes):
+            take_path = Path(take["path"])
+            take_url = session.dynamic_route(
+                f"take-audio-{take['id']}",
+                lambda request, p=take_path: audio_file_response(p),
+            )
+            take_id = take["id"]
+            take_voice = take["voice"]
+            take_download = session.dynamic_route(
+                f"take-download-{take_id}",
+                lambda request, p=take_path, name=take_voice, tid=take_id: audio_file_response(
+                    p, f"take_{name}_{tid}.wav"
+                ),
+            )
+            take_nodes.append(
+                ui.div(
+                    {"class": "history-item"},
+                    ui.div(
+                        {"class": "history-item-header"},
+                        ui.span(f"Take {len(takes) - index}", class_="history-badge"),
+                        ui.span(take["voice"], class_="history-voice"),
+                        ui.span(f"{take['engine']} · {take['speed']:.2f}×", class_="history-meta"),
+                        ui.span(f"{take['duration']:.1f}s", class_="history-dur"),
+                        ui.span(take["time"], class_="history-time"),
+                    ),
+                    ui.div(take["snippet"], class_="history-snippet"),
+                    ui.div(
+                        {"class": "history-playback"},
+                        ui.tags.audio(controls=True, preload="none", src=take_url),
+                        ui.tags.a(
+                            icon_svg("download"),
+                            href=take_download,
+                            download=f"take_{take['voice']}_{take['id']}.wav",
+                            class_="btn btn-sm btn-outline-secondary btn-download-take",
+                            title="Download WAV",
+                        ),
+                    ),
+                )
+            )
+
+        return ui.tags.details(
+            ui.tags.summary(f"Session Takes ({len(takes)})"),
+            ui.div({"class": "history-list"}, *take_nodes),
+            class_="session-history-card",
+            open=True,
+        )
+
+    @render.ui
+    def ab_comparison_ui():
+        takes = session_takes()
+        if len(takes) < 2:
+            return ui.div()
+
+        choices = {
+            t["id"]: f"Take {t['id']} ({t['voice']} · {t['engine']}) - {t['snippet'][:30]}"
+            for t in takes
+        }
+        sel_a = takes[0]["id"]
+        sel_b = takes[1]["id"]
+
+        take_a_obj = next((t for t in takes if t["id"] == (input.ab_select_a() or sel_a)), takes[0])
+        take_b_obj = next((t for t in takes if t["id"] == (input.ab_select_b() or sel_b)), takes[1])
+
+        url_a = session.dynamic_route(
+            f"ab-audio-a-{take_a_obj['id']}",
+            lambda request, p=Path(take_a_obj["path"]): audio_file_response(p),
+        )
+        url_b = session.dynamic_route(
+            f"ab-audio-b-{take_b_obj['id']}",
+            lambda request, p=Path(take_b_obj["path"]): audio_file_response(p),
+        )
+
+        return ui.tags.details(
+            ui.tags.summary("A/B Voice Comparison"),
+            ui.div(
+                {"class": "ab-comparison-box"},
+                ui.div(
+                    {"class": "ab-track-column"},
+                    ui.h4("Track A", class_="ab-track-title"),
+                    ui.input_select("ab_select_a", None, choices=choices, selected=sel_a),
+                    ui.tags.audio(controls=True, preload="none", src=url_a, class_="w-100"),
+                ),
+                ui.div(
+                    {"class": "ab-track-column"},
+                    ui.h4("Track B", class_="ab-track-title"),
+                    ui.input_select("ab_select_b", None, choices=choices, selected=sel_b),
+                    ui.tags.audio(controls=True, preload="none", src=url_b, class_="w-100"),
+                ),
+            ),
+            class_="ab-comparison-card",
         )
 
 
@@ -1719,11 +2310,19 @@ def main() -> None:
 
     from shiny import run_app
 
-    parser = argparse.ArgumentParser(description="Start Sona Shiny app on a random or specified port")
-    parser.add_argument("--port", "-p", type=int, default=0, help="Port to listen on (default: 0 for random port)")
-    parser.add_argument("--host", "-H", type=str, default="127.0.0.1", help="Host address (default: 127.0.0.1)")
+    parser = argparse.ArgumentParser(
+        description="Start Sona Shiny app on a random or specified port"
+    )
+    parser.add_argument(
+        "--port", "-p", type=int, default=0, help="Port to listen on (default: 0 for random port)"
+    )
+    parser.add_argument(
+        "--host", "-H", type=str, default="127.0.0.1", help="Host address (default: 127.0.0.1)"
+    )
     parser.add_argument("--reload", "-r", action="store_true", help="Enable auto-reload")
-    parser.add_argument("--launch-browser", "-b", action="store_true", help="Launch browser on start")
+    parser.add_argument(
+        "--launch-browser", "-b", action="store_true", help="Launch browser on start"
+    )
     args, _ = parser.parse_known_args()
 
     run_app(
@@ -1737,4 +2336,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

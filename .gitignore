@@ -13,3 +13,4 @@ cloned_*.wav
 .claude/
 voice_samples/
 .vscode/
+generated/

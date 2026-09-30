@@ -40,7 +40,14 @@ def test_selected_listening_room_ui_contains_the_core_workflow():
 
 def test_ui_contains_new_reference_modes():
     rendered = str(app_ui)
-    for copy in ("Record", "Upload", "Saved voices", "Voice name", "recording_prompt_display", "record_template"):
+    for copy in (
+        "Record",
+        "Upload",
+        "Saved voices",
+        "Voice name",
+        "recording_prompt_display",
+        "record_template",
+    ):
         assert copy in rendered
 
 
@@ -63,7 +70,10 @@ def test_recording_templates_defined_and_contain_conversational():
     conversational = RECORDING_TEMPLATES["conversational"]
     assert "Hi, I’m [name]." in conversational
     assert "Today is a beautiful day, and I’m feeling pretty good." in conversational
-    assert "Can you believe it? I have three things to finish, then I’m heading home." in conversational
+    assert (
+        "Can you believe it? I have three things to finish, then I’m heading home."
+        in conversational
+    )
 
 
 def test_recording_ui_stops_after_maximum_duration():
@@ -134,8 +144,16 @@ def test_clone_voice_with_user_edited_transcript(tmp_path):
 
 def test_resolve_reference_transcript_states():
     assert app_module.resolve_reference_transcript("", {}, set()) == ("", "idle", False)
-    assert app_module.resolve_reference_transcript("ref_a", {"ref_a": "Text A"}, set()) == ("Text A", "ready", False)
-    assert app_module.resolve_reference_transcript("ref_b", {}, {"ref_b"}) == ("", "transcribing", False)
+    assert app_module.resolve_reference_transcript("ref_a", {"ref_a": "Text A"}, set()) == (
+        "Text A",
+        "ready",
+        False,
+    )
+    assert app_module.resolve_reference_transcript("ref_b", {}, {"ref_b"}) == (
+        "",
+        "transcribing",
+        False,
+    )
     assert app_module.resolve_reference_transcript("ref_c", {}, set()) == ("", "transcribing", True)
 
 
@@ -268,6 +286,7 @@ def test_overwritten_audio_path_invalidates_old_transcript_cache(tmp_path):
     assert should_run_1 is False
 
     import time
+
     time.sleep(0.01)
     wav_file.write_bytes(b"completely different speech content with different size")
 
@@ -319,12 +338,20 @@ def test_configure_shiny_port_randomizes_default_port():
 def test_configure_shiny_port_preserves_explicit_cli_args():
     for flag in ["--port", "-p"]:
         cfg = SimpleNamespace(port=8000, host="127.0.0.1")
-        assert app_module._configure_shiny_port(config=cfg, argv=["shiny", "run", flag, "8080", "app.py"]) is None
+        assert (
+            app_module._configure_shiny_port(
+                config=cfg, argv=["shiny", "run", flag, "8080", "app.py"]
+            )
+            is None
+        )
         assert cfg.port == 8000
 
     for flag_val in ["--port=8080", "-p=8080"]:
         cfg = SimpleNamespace(port=8000, host="127.0.0.1")
-        assert app_module._configure_shiny_port(config=cfg, argv=["shiny", "run", flag_val, "app.py"]) is None
+        assert (
+            app_module._configure_shiny_port(config=cfg, argv=["shiny", "run", flag_val, "app.py"])
+            is None
+        )
         assert cfg.port == 8000
 
 
@@ -335,7 +362,9 @@ def test_configure_shiny_port_respects_env_var():
     assert cfg.port == 9090
 
     cfg2 = SimpleNamespace(port=8000, host="127.0.0.1")
-    res2 = app_module._configure_shiny_port(config=cfg2, argv=["app.py"], environ={"SHINY_PORT": "9095"})
+    res2 = app_module._configure_shiny_port(
+        config=cfg2, argv=["app.py"], environ={"SHINY_PORT": "9095"}
+    )
     assert res2 == 9095
     assert cfg2.port == 9095
 
@@ -353,6 +382,7 @@ def test_main_runs_with_random_port_by_default(monkeypatch):
         run_calls.append((app_target, kwargs))
 
     import shiny
+
     monkeypatch.setattr(shiny, "run_app", mock_run_app)
     monkeypatch.setattr("sys.argv", ["app.py"])
 
@@ -369,13 +399,13 @@ def test_main_forwards_explicit_port(monkeypatch):
         run_calls.append((app_target, kwargs))
 
     import shiny
+
     monkeypatch.setattr(shiny, "run_app", mock_run_app)
     monkeypatch.setattr("sys.argv", ["app.py", "--port", "9876"])
 
     app_module.main()
     assert len(run_calls) == 1
     assert run_calls[0][1]["port"] == 9876
-
 
 
 def test_waveform_matches_full_audio_summary(tmp_path):
@@ -406,10 +436,12 @@ def test_audio_response_supports_playback_ranges_and_downloads(tmp_path):
 
     path = tmp_path / "sample.wav"
     sf.write(path, np.zeros(240, dtype=np.float32), 24000)
-    web_app = Starlette(routes=[
-        Route("/audio", lambda request: app_module.audio_file_response(path)),
-        Route("/download", lambda request: app_module.audio_file_response(path, "voice.wav")),
-    ])
+    web_app = Starlette(
+        routes=[
+            Route("/audio", lambda request: app_module.audio_file_response(path)),
+            Route("/download", lambda request: app_module.audio_file_response(path, "voice.wav")),
+        ]
+    )
     with TestClient(web_app) as client:
         response = client.get("/audio", headers={"Range": "bytes=0-43"})
         assert response.status_code == 206
@@ -457,6 +489,7 @@ def test_create_voices_zip(tmp_path):
     assert out_zip.exists()
 
     import zipfile
+
     with zipfile.ZipFile(out_zip, "r") as zf:
         names = zf.namelist()
         assert "voice_a.wav" in names
@@ -474,6 +507,7 @@ def test_create_voices_zip_subset(tmp_path):
     app_module.create_voices_zip(out_zip, voice_names=["voice_a"], voices_dir=voices_dir)
 
     import zipfile
+
     with zipfile.ZipFile(out_zip, "r") as zf:
         assert zf.namelist() == ["voice_a.wav"]
 
@@ -485,7 +519,9 @@ def test_import_voice_file_audio(tmp_path):
     sr = 24000
     sf.write(str(sample_wav), np.zeros(2400, dtype=np.float32), sr)
 
-    imported = app_module.import_voice_file(sample_wav, "My Friend's Voice.wav", voices_dir=voices_dir)
+    imported = app_module.import_voice_file(
+        sample_wav, "My Friend's Voice.wav", voices_dir=voices_dir
+    )
     assert imported == ["my-friends-voice"]
     target = voices_dir / "my-friends-voice.wav"
     assert target.exists()
@@ -505,6 +541,7 @@ def test_import_voice_file_zip(tmp_path):
 
     zip_path = tmp_path / "archive.zip"
     import zipfile
+
     with zipfile.ZipFile(zip_path, "w") as zf:
         zf.write(source_wav1, arcname="Alice Voice.wav")
         zf.write(source_wav2, arcname="folder/Bob Voice.wav")
@@ -526,6 +563,7 @@ def test_import_voice_file_zip_slip_prevention(tmp_path):
 
     zip_path = tmp_path / "slip.zip"
     import zipfile
+
     with zipfile.ZipFile(zip_path, "w") as zf:
         zf.write(source_wav, arcname="../../evil.wav")
 
@@ -537,6 +575,7 @@ def test_import_voice_file_zip_slip_prevention(tmp_path):
 
 def test_import_voice_file_invalid_file(tmp_path):
     import pytest
+
     voices_dir = tmp_path / "voices"
     voices_dir.mkdir()
 
@@ -549,6 +588,7 @@ def test_import_voice_file_invalid_file(tmp_path):
 
 def test_import_voice_file_invalid_zip(tmp_path):
     import pytest
+
     voices_dir = tmp_path / "voices"
     voices_dir.mkdir()
 
@@ -563,6 +603,7 @@ def test_import_voice_file_empty_zip(tmp_path):
     import zipfile
 
     import pytest
+
     voices_dir = tmp_path / "voices"
     voices_dir.mkdir()
 
@@ -587,15 +628,20 @@ def test_export_responses_with_test_client(tmp_path):
     zip_path = tmp_path / "saved_voices.zip"
     app_module.create_voices_zip(zip_path, voices_dir=voices_dir)
 
-    web_app = Starlette(routes=[
-        Route("/export-voice", lambda req: app_module.audio_file_response(v_path, "demo.wav")),
-        Route("/export-all", lambda req: app_module.FileResponse(
-            zip_path,
-            media_type="application/zip",
-            filename="saved_voices.zip",
-            content_disposition_type="attachment",
-        )),
-    ])
+    web_app = Starlette(
+        routes=[
+            Route("/export-voice", lambda req: app_module.audio_file_response(v_path, "demo.wav")),
+            Route(
+                "/export-all",
+                lambda req: app_module.FileResponse(
+                    zip_path,
+                    media_type="application/zip",
+                    filename="saved_voices.zip",
+                    content_disposition_type="attachment",
+                ),
+            ),
+        ]
+    )
     with TestClient(web_app) as client:
         res_voice = client.get("/export-voice")
         assert res_voice.status_code == 200
@@ -605,3 +651,123 @@ def test_export_responses_with_test_client(tmp_path):
         assert res_zip.status_code == 200
         assert 'attachment; filename="saved_voices.zip"' == res_zip.headers["content-disposition"]
         assert res_zip.headers["content-type"] == "application/zip"
+
+
+def test_voice_metadata_save_and_load(tmp_path):
+    voices_dir = tmp_path / "voices"
+    voices_dir.mkdir()
+    meta = app_module._load_voice_metadata("custom_voice", voices_dir=voices_dir)
+    assert meta == {}
+
+    app_module._save_voice_metadata(
+        "custom_voice",
+        {"transcript": "Hello world", "engine": "qwen"},
+        voices_dir=voices_dir,
+    )
+    loaded = app_module._load_voice_metadata("custom_voice", voices_dir=voices_dir)
+    assert loaded["transcript"] == "Hello world"
+    assert loaded["engine"] == "qwen"
+
+
+def test_rename_voice_profile(tmp_path):
+    voices_dir = tmp_path / "voices"
+    voices_dir.mkdir()
+    wav_path = voices_dir / "old_voice.wav"
+    wav_path.write_bytes(b"dummy wav data")
+    app_module._save_voice_metadata(
+        "old_voice",
+        {"transcript": "Sample transcript"},
+        voices_dir=voices_dir,
+    )
+
+    result_name = app_module._rename_voice_profile("old_voice", "new_voice", voices_dir=voices_dir)
+    assert result_name == "new_voice"
+    assert not (voices_dir / "old_voice.wav").exists()
+    assert not (voices_dir / "old_voice.json").exists()
+    assert (voices_dir / "new_voice.wav").exists()
+    assert (voices_dir / "new_voice.json").exists()
+
+    meta = app_module._load_voice_metadata("new_voice", voices_dir=voices_dir)
+    assert meta["transcript"] == "Sample transcript"
+
+
+def test_rename_voice_profile_validation(tmp_path):
+    import pytest
+
+    voices_dir = tmp_path / "voices"
+    voices_dir.mkdir()
+    (voices_dir / "v1.wav").write_bytes(b"data")
+    (voices_dir / "v2.wav").write_bytes(b"data")
+
+    with pytest.raises(FileExistsError, match="already exists"):
+        app_module._rename_voice_profile("v1", "v2", voices_dir=voices_dir)
+
+    with pytest.raises(FileNotFoundError, match="not found"):
+        app_module._rename_voice_profile("nonexistent", "v3", voices_dir=voices_dir)
+
+    with pytest.raises(ValueError, match="Invalid voice name"):
+        app_module._rename_voice_profile("v1", "???", voices_dir=voices_dir)
+
+
+def test_script_presets_defined():
+    assert len(app_module.SCRIPT_PRESETS) >= 6
+    assert "custom" in app_module.SCRIPT_PRESETS
+    assert "default" in app_module.SCRIPT_PRESETS
+    assert "narration" in app_module.SCRIPT_PRESETS
+    for key in app_module.SCRIPT_PRESETS:
+        if key != "custom":
+            assert key in app_module.SCRIPT_PRESET_TEXTS
+            assert len(app_module.SCRIPT_PRESET_TEXTS[key]) > 20
+
+
+def test_ui_contains_new_features():
+    rendered = str(app_ui)
+    assert "synthesis_speed" in rendered
+    assert "script_preset" in rendered
+    assert "btn_unload_models" in rendered
+    assert "Free RAM" in rendered
+    assert "mic-device-select" in rendered
+    assert "record-take-preview" in rendered
+    assert "session_history_ui" in rendered
+    assert "ab_comparison_ui" in rendered
+
+
+def test_resolve_reference_transcript_uses_sidecar_metadata(tmp_path):
+    voices_dir = tmp_path / "voices"
+    voices_dir.mkdir()
+    sample = voices_dir / "karan.wav"
+    sf.write(str(sample), np.zeros(2400, dtype=np.float32), 24000)
+    app_module._save_voice_metadata(
+        "karan",
+        {"transcript": "Sidecar cached transcript"},
+        voices_dir=voices_dir,
+    )
+
+    transcript, status, should_transcribe = app_module.resolve_reference_transcript(
+        "karan_ref_id",
+        cache={},
+        pending=set(),
+        voice_name="karan",
+        voices_dir=voices_dir,
+    )
+    assert transcript == "Sidecar cached transcript"
+    assert status == "ready"
+    assert should_transcribe is False
+
+
+def test_record_user_transcript_edit_updates_sidecar(tmp_path):
+    voices_dir = tmp_path / "voices"
+    voices_dir.mkdir()
+    sample = voices_dir / "actor.wav"
+    sf.write(str(sample), np.zeros(2400, dtype=np.float32), 24000)
+
+    updated_cache = app_module.record_user_transcript_edit(
+        "actor_ref_id",
+        "Edited manual text",
+        cache={},
+        voice_name="actor",
+        voices_dir=voices_dir,
+    )
+    assert updated_cache["actor_ref_id"] == "Edited manual text"
+    meta = app_module._load_voice_metadata("actor", voices_dir=voices_dir)
+    assert meta["transcript"] == "Edited manual text"

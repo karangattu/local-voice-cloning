@@ -92,13 +92,17 @@ def analyze_reference_audio(file_path: str | Path) -> dict:
     if duration < 3.0:
         warnings.append("The sample is shorter than 3 seconds. Use 5 to 12 seconds of speech.")
     elif duration > 12.0:
-        warnings.append("The sample is longer than 12 seconds. The app uses about 12 seconds and cuts at a pause.")
+        warnings.append(
+            "The sample is longer than 12 seconds. The app uses about 12 seconds and cuts at a pause."
+        )
     if clipping_ratio > 0.001:
         warnings.append("The sample is clipped (distorted). Record again at a lower input level.")
     if rms_db < -35.0:
         warnings.append("The sample is very quiet. Record closer to the microphone.")
     if silence_ratio > 0.4:
-        warnings.append("The sample contains long silences. They make the output slow and unnatural.")
+        warnings.append(
+            "The sample contains long silences. They make the output slow and unnatural."
+        )
     if sr < 16000:
         warnings.append(f"The sample rate is low ({sr} Hz). Use a recording of 24000 Hz or more.")
 
@@ -265,8 +269,10 @@ def join_with_room_tone(
     source = np.concatenate([np.asarray(audio, dtype=np.float32) for audio, _ in pieces])
     tail_len = 0 if tail is None else len(tail)
     total = sum(len(audio) + round(sample_rate * pause) for audio, pause in pieces) + tail_len
-    bed = room_tone(source, sample_rate, total) if tail is None else np.concatenate(
-        [room_tone(source, sample_rate, total - tail_len), tail]
+    bed = (
+        room_tone(source, sample_rate, total)
+        if tail is None
+        else np.concatenate([room_tone(source, sample_rate, total - tail_len), tail])
     )
     speech = np.zeros(total, dtype=np.float32)
     gain = np.zeros(total, dtype=np.float32)
@@ -330,7 +336,9 @@ def reduce_background_noise(
     return (audio * gain).astype(np.float32)
 
 
-def enhance_audio(audio: np.ndarray, sample_rate: int, target_level_db: float = -16.0) -> np.ndarray:
+def enhance_audio(
+    audio: np.ndarray, sample_rate: int, target_level_db: float = -16.0
+) -> np.ndarray:
     """Post-processing chain for synthesized speech: rumble removal, background
     hiss reduction, edge silence trimming, click-free fades, and peak-safe
     loudness normalization."""
@@ -384,3 +392,25 @@ def save_audio(
     else:
         sf.write(str(target_path), audio_np, sample_rate, format="WAV", subtype="PCM_24")
     return target_path
+
+
+def slice_audio(
+    source_path: str | Path,
+    start_sec: float = 0.0,
+    end_sec: float | None = None,
+    output_path: str | Path | None = None,
+) -> tuple[np.ndarray, int]:
+    path = Path(source_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Audio file not found: {source_path}")
+    data, sr = sf.read(str(path), dtype="float32")
+    if data.ndim > 1:
+        data = np.mean(data, axis=1)
+    start_frame = max(0, int(start_sec * sr))
+    end_frame = len(data) if end_sec is None else min(len(data), int(end_sec * sr))
+    if start_frame >= end_frame:
+        start_frame = 0
+    sliced = data[start_frame:end_frame]
+    if output_path is not None:
+        save_audio(output_path, sliced, sample_rate=sr)
+    return sliced, sr

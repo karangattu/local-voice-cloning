@@ -18,6 +18,7 @@ from src.audio_utils import (
     reduce_background_noise,
     resample_audio,
     save_audio,
+    slice_audio,
     trim_silence,
 )
 
@@ -50,7 +51,7 @@ def test_save_and_load_audio():
         sr = 24000
         t = np.linspace(0, 1.0, sr, endpoint=False)
         tone = (0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
-        
+
         saved_path = save_audio(file_path, tone, sample_rate=sr)
         assert saved_path.exists()
 
@@ -91,7 +92,10 @@ def test_save_audio_format_override():
 
 
 def test_save_audio_unsupported_format():
-    with tempfile.TemporaryDirectory() as tmpdir, pytest.raises(ValueError, match="Unsupported output format"):
+    with (
+        tempfile.TemporaryDirectory() as tmpdir,
+        pytest.raises(ValueError, match="Unsupported output format"),
+    ):
         save_audio(Path(tmpdir) / "test.xyz", _make_tone(), sample_rate=24000)
 
 
@@ -144,7 +148,9 @@ def test_prepare_reference_shortens_long_pauses():
 def test_prepare_reference_cuts_at_pause_and_ends_silent():
     sr = 24000
     speech = np.concatenate([_make_tone(sr), np.zeros(sr // 5, dtype=np.float32)] * 10)
-    prepared = prepare_reference_audio(speech, sr, max_duration_seconds=6.0, tail_silence_seconds=0.3)
+    prepared = prepare_reference_audio(
+        speech, sr, max_duration_seconds=6.0, tail_silence_seconds=0.3
+    )
     assert len(prepared) <= int(6.3 * sr)
     tail_start = len(prepared) - int(0.35 * sr)
     assert np.max(np.abs(prepared[tail_start:])) < 1e-3
@@ -154,7 +160,9 @@ def test_join_with_room_tone_keeps_background_noise_in_pauses():
     sr = 24000
     rng = np.random.default_rng(1)
     noise = (0.003 * rng.standard_normal(sr)).astype(np.float32)
-    piece = np.concatenate([noise[: sr // 4], _make_tone(sr, 0.5) + noise[: sr // 2], noise[: sr // 4]])
+    piece = np.concatenate(
+        [noise[: sr // 4], _make_tone(sr, 0.5) + noise[: sr // 2], noise[: sr // 4]]
+    )
     joined = join_with_room_tone([(piece, 0.0), (piece, 0.4)], sr)
     assert len(joined) == 2 * len(piece) + int(0.4 * sr)
     pause = joined[len(piece) : len(piece) + int(0.4 * sr)]
@@ -175,7 +183,9 @@ def test_reduce_background_noise_lowers_pauses_and_keeps_speech():
     audio = noise.copy()
     audio[sr : 2 * sr] += _make_tone(sr)
     reduced = reduce_background_noise(audio, sr)
-    pause_ratio = np.sqrt(np.mean(reduced[: sr // 2] ** 2)) / np.sqrt(np.mean(audio[: sr // 2] ** 2))
+    pause_ratio = np.sqrt(np.mean(reduced[: sr // 2] ** 2)) / np.sqrt(
+        np.mean(audio[: sr // 2] ** 2)
+    )
     speech_ratio = np.sqrt(np.mean(reduced[sr + sr // 4 : 2 * sr - sr // 4] ** 2)) / np.sqrt(
         np.mean(audio[sr + sr // 4 : 2 * sr - sr // 4] ** 2)
     )
@@ -185,7 +195,9 @@ def test_reduce_background_noise_lowers_pauses_and_keeps_speech():
 
 def test_enhance_audio_pipeline():
     sr = 24000
-    audio = np.concatenate([np.zeros(sr // 2, dtype=np.float32), _make_tone(sr), np.zeros(sr // 2, dtype=np.float32)])
+    audio = np.concatenate(
+        [np.zeros(sr // 2, dtype=np.float32), _make_tone(sr), np.zeros(sr // 2, dtype=np.float32)]
+    )
     enhanced = enhance_audio(audio, sr)
     assert enhanced.dtype == np.float32
     assert len(enhanced) > 0
@@ -243,3 +255,56 @@ def test_analyze_reference_audio_silent_sample(tmp_path):
 def test_analyze_reference_audio_missing_file():
     with pytest.raises(FileNotFoundError):
         analyze_reference_audio("does_not_exist.wav")
+
+
+def test_slice_audio_valid(tmp_path):
+    sr = 24000
+    source = tmp_path / "source.wav"
+    out = tmp_path / "sliced.wav"
+    t = np.linspace(0, 5.0, sr * 5, endpoint=False)
+    tone = (0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+    sf.write(str(source), tone, sr)
+
+    sliced, out_sr = slice_audio(source, 1.0, 3.0, out)
+    assert out_sr == sr
+    assert len(sliced) == sr * 2
+    assert out.exists()
+
+    info = sf.info(str(out))
+    assert info.frames == pytest.approx(sr * 2.0, abs=100)
+
+
+def test_slice_audio_invalid_range(tmp_path):
+    sr = 24000
+    source = tmp_path / "source.wav"
+    out = tmp_path / "sliced.wav"
+    tone = (0.5 * np.sin(2 * np.pi * 440 * np.linspace(0, 2.0, sr * 2, endpoint=False))).astype(
+        np.float32
+    )
+    sf.write(str(source), tone, sr)
+
+    sliced, out_sr = slice_audio(source, 3.0, 1.0, out)
+    assert out_sr == sr
+    assert len(sliced) == sr * 1
+    assert out.exists()
+
+
+def test_slice_audio_clamped_end(tmp_path):
+    sr = 24000
+    source = tmp_path / "source.wav"
+    out = tmp_path / "sliced.wav"
+    tone = (0.5 * np.sin(2 * np.pi * 440 * np.linspace(0, 2.0, sr * 2, endpoint=False))).astype(
+        np.float32
+    )
+    sf.write(str(source), tone, sr)
+
+    sliced, out_sr = slice_audio(source, 1.0, 10.0, out)
+    assert out_sr == sr
+    assert len(sliced) == sr * 1
+    info = sf.info(str(out))
+    assert info.frames == pytest.approx(sr * 1.0, abs=100)
+
+
+def test_slice_audio_missing_file(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        slice_audio(tmp_path / "missing.wav", 0.0, 1.0)
