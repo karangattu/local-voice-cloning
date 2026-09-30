@@ -744,7 +744,7 @@ def test_resolve_reference_transcript_uses_sidecar_metadata(tmp_path):
     )
 
     transcript, status, should_transcribe = app_module.resolve_reference_transcript(
-        "karan_ref_id",
+        app_module.get_reference_id(sample),
         cache={},
         pending=set(),
         voice_name="karan",
@@ -771,3 +771,67 @@ def test_record_user_transcript_edit_updates_sidecar(tmp_path):
     assert updated_cache["actor_ref_id"] == "Edited manual text"
     meta = app_module._load_voice_metadata("actor", voices_dir=voices_dir)
     assert meta["transcript"] == "Edited manual text"
+
+
+def test_background_transcript_does_not_overwrite_another_voice(tmp_path):
+    app_module._save_voice_metadata("bob", {"transcript": "Bob's words"}, tmp_path)
+    app_module.apply_transcription_result(
+        "alice_ref",
+        "Alice's words",
+        None,
+        "bob_ref",
+        {},
+        {"alice_ref"},
+        voice_name="bob",
+        voices_dir=tmp_path,
+    )
+    assert app_module._load_voice_metadata("bob", tmp_path)["transcript"] == "Bob's words"
+
+
+def test_replaced_voice_does_not_reuse_sidecar_transcript(tmp_path):
+    sample = tmp_path / "alice.wav"
+    sample.write_bytes(b"first recording")
+    app_module.record_user_transcript_edit(
+        app_module.get_reference_id(sample),
+        "Old words",
+        {},
+        "alice",
+        tmp_path,
+    )
+    sample.write_bytes(b"a different recording")
+    text, status, should_run = app_module.resolve_reference_transcript(
+        app_module.get_reference_id(sample),
+        {},
+        set(),
+        "alice",
+        tmp_path,
+    )
+    assert (text, status, should_run) == ("", "transcribing", True)
+
+
+def test_invalid_metadata_does_not_break_voice_selection(tmp_path):
+    (tmp_path / "alice.json").write_text('["wrong shape"]')
+    assert app_module._load_voice_metadata("alice", tmp_path) == {}
+
+
+def test_importing_replacement_voice_clears_old_transcript(tmp_path):
+    voices = tmp_path / "voices"
+    voices.mkdir()
+    app_module._save_voice_metadata("alice", {"transcript": "Old words"}, voices)
+    source = tmp_path / "source.wav"
+    sf.write(source, np.ones(24000, dtype=np.float32) * 0.1, 24000)
+    app_module.import_voice_file(source, "alice.wav", voices)
+    assert not app_module._load_voice_metadata("alice", voices).get("transcript")
+
+
+def test_only_saved_audio_uses_voice_metadata(tmp_path, monkeypatch):
+    voices = tmp_path / "voices"
+    voices.mkdir()
+    monkeypatch.setattr(app_module, "VOICE_SAMPLES_DIR", voices)
+    saved = voices / "alice.wav"
+    saved.write_bytes(b"wav")
+    upload = tmp_path / "upload"
+    upload.write_bytes(b"audio")
+    resolve = getattr(app_module, "saved_reference_name", lambda ref: Path(ref[1]).stem)
+    assert resolve((str(saved), "alice.wav")) == "alice"
+    assert resolve((str(upload), "alice.wav")) is None

@@ -61,6 +61,17 @@ def test_chatterbox_handles_torch_tensor_output(reference):
     assert len(result.audio) == 2400
 
 
+def test_chatterbox_does_not_require_transcription(reference):
+    def unavailable_stt(_):
+        raise RuntimeError("Whisper is unavailable")
+
+    model = SimpleNamespace(sr=24000, generate=lambda *a, **k: np.ones(2400, dtype=np.float32))
+    cloner = module.LocalVoiceCloner(
+        engine="chatterbox", tts_loader=lambda _: model, stt_loader=unavailable_stt,
+    )
+    assert cloner.clone_voice(reference, "Hello").duration_seconds > 0
+
+
 def test_chatterbox_sample_rate_comes_from_model_sr(reference):
     model = SimpleNamespace(sr=16000, generate=lambda *a, **k: np.zeros(1600, dtype=np.float32))
     cloner = module.LocalVoiceCloner(engine='chatterbox', tts_loader=lambda _: model)

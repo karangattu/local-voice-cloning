@@ -409,7 +409,7 @@ def slice_audio(
     start_frame = max(0, int(start_sec * sr))
     end_frame = len(data) if end_sec is None else min(len(data), int(end_sec * sr))
     if start_frame >= end_frame:
-        start_frame = 0
+        raise ValueError("Trim must select a non-empty range within the recording.")
     sliced = data[start_frame:end_frame]
     if output_path is not None:
         save_audio(output_path, sliced, sample_rate=sr)

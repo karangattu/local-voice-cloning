@@ -109,7 +109,9 @@ To use Chatterbox with the CLI or API instead, pass `--engine chatterbox`.
 
 The first run downloads about 3 GB of model files. If downloads are slow, set a `HF_TOKEN` for higher rate limits.
 
-`chatterbox-tts` pins `transformers==5.2.0` and `torch==2.6.0`. These versions conflict with the `transformers>=5.14.0` that `mlx-audio` needs. As a result, there is no `uv` extra for Chatterbox. If the package is not installed, the engine shows a clear error. The Qwen and OmniVoice engines keep working.
+`chatterbox-tts` pins `transformers==5.2.0`, `torch==2.6.0`, and `torchaudio==2.6.0`. These versions conflict with the default app environment. Use a separate environment for Chatterbox's pinned dependencies. Installing them into the default environment can break Whisper transcription and Qwen generation. There is no `uv` extra for Chatterbox; if the package is missing, the engine shows a setup error.
+
+The default app pins matching PyTorch and torchaudio versions because their native libraries must match. If an optional install breaks transcription, restore the default environment with `uv sync` (or `uv sync --extra dev` for development), then restart Shiny. This also removes packages installed outside the project's dependency list.
 
 If model loading stops with `TypeError: 'NoneType' object is not callable`, install an older setuptools:
 

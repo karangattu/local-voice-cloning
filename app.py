@@ -450,6 +450,12 @@ app_ui = ui.page_fluid(
                 };
 
                 document.addEventListener('DOMContentLoaded', function() {
+                    document.addEventListener('input', function(e) {
+                        const el = e.target;
+                        if (!['ref_transcript', 'ref_trim_start', 'ref_trim_end'].includes(el.id)) return;
+                        const value = el.id === 'ref_transcript' ? el.value : Number(el.value);
+                        Shiny.setInputValue(el.id, value, {priority: 'event'});
+                    });
                     populateMicDevices();
                     if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
                         navigator.mediaDevices.addEventListener('devicechange', populateMicDevices);
@@ -491,6 +497,7 @@ app_ui = ui.page_fluid(
                         script.addEventListener('input', function() {
                             const invalid = script.value.length > 5000;
                             script.setAttribute('aria-invalid', String(invalid));
+                            Shiny.setInputValue('speech_text', script.value, {priority: 'event'});
                         });
                     }
                 });
@@ -978,7 +985,8 @@ def _load_voice_metadata(name: str, voices_dir: Path | None = None) -> dict:
     json_path = dir_path / f"{safe_name}.json"
     if json_path.is_file():
         try:
-            return json.loads(json_path.read_text(encoding="utf-8"))
+            metadata = json.loads(json_path.read_text(encoding="utf-8"))
+            return metadata if isinstance(metadata, dict) else {}
         except (OSError, ValueError):
             return {}
     return {}
@@ -993,6 +1001,8 @@ def _save_voice_metadata(name: str, metadata: dict, voices_dir: Path | None = No
         return
     existing = _load_voice_metadata(safe_name, dir_path)
     existing.update(metadata)
+    if "transcript" in metadata:
+        existing["reference_id"] = get_reference_id(dir_path / f"{safe_name}.wav")
     json_path = dir_path / f"{safe_name}.json"
     try:
         json_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
@@ -1041,7 +1051,9 @@ def _process_and_save_voice_audio(
     audio_np = apply_fades(audio_np, sr)
     save_audio(target_path, audio_np, sample_rate=sr)
     dur = float(len(audio_np) / sr) if sr > 0 else 0.0
-    _save_voice_metadata(name, {"duration_seconds": dur, "sample_rate": sr}, voices_dir)
+    _save_voice_metadata(
+        name, {"duration_seconds": dur, "sample_rate": sr, "transcript": ""}, voices_dir
+    )
     return name
 
 
@@ -1109,6 +1121,15 @@ def get_reference_id(audio_path: str | Path | None) -> str:
         return str(path)
 
 
+def saved_reference_name(ref: tuple[str, str] | None) -> str | None:
+    if not ref:
+        return None
+    path = Path(ref[0]).resolve()
+    if path.parent == VOICE_SAMPLES_DIR.resolve() and path.suffix.lower() == ".wav":
+        return path.stem
+    return None
+
+
 def resolve_reference_transcript(
     ref_id: str,
     cache: dict[str, str],
@@ -1122,8 +1143,9 @@ def resolve_reference_transcript(
         return cache[ref_id], "ready", False
     if voice_name:
         meta = _load_voice_metadata(voice_name, voices_dir)
-        transcript = meta.get("transcript", "").strip()
-        if transcript:
+        transcript = meta.get("transcript", "")
+        transcript = transcript.strip() if isinstance(transcript, str) else ""
+        if transcript and meta.get("reference_id", ref_id) == ref_id:
             return transcript, "ready", False
     if ref_id in pending:
         return "", "transcribing", False
@@ -1149,7 +1171,7 @@ def apply_transcription_result(
         if ref_id not in new_cache or not new_cache[ref_id].strip():
             new_cache[ref_id] = transcript
         resolved_text = new_cache[ref_id]
-        if voice_name:
+        if voice_name and is_current:
             _save_voice_metadata(voice_name, {"transcript": resolved_text}, voices_dir)
         return new_cache, new_pending, is_current, resolved_text, None
 
@@ -1224,6 +1246,7 @@ def server(input, output, session):
     output_waveform = reactive.value(None)
     generation_stage = reactive.value(None)
     generation_started_at = reactive.value(None)
+    generation_request = reactive.value({})
     last_recorded_path = reactive.value(None)
     last_recorded_name = reactive.value(None)
     library_refresh = reactive.value(0)
@@ -1231,6 +1254,7 @@ def server(input, output, session):
     pending_transcriptions = reactive.value(set())
     ref_transcript_value = reactive.value("")
     transcription_status = reactive.value("idle")
+    transcription_error = reactive.value("")
     trimmed_reference_path = reactive.value(None)
     session_takes = reactive.value([])
 
@@ -1291,7 +1315,7 @@ def server(input, output, session):
         ref_id, transcript, error = res
         current_ref = effective_reference()
         current_ref_id = get_reference_id(current_ref[0]) if current_ref else ""
-        voice_name = Path(current_ref[1]).stem if current_ref and current_ref[1] else None
+        voice_name = saved_reference_name(current_ref)
 
         new_cache, new_pending, is_current, resolved_text, err = apply_transcription_result(
             ref_id,
@@ -1308,9 +1332,11 @@ def server(input, output, session):
 
         if is_current:
             if err is not None:
+                transcription_error.set(err)
                 transcription_status.set("error")
                 ui.notification_show(f"Transcription failed: {err}", type="warning")
             else:
+                transcription_error.set("")
                 ref_transcript_value.set(resolved_text)
                 ui.update_text_area("ref_transcript", value=resolved_text)
                 transcription_status.set("ready")
@@ -1322,7 +1348,7 @@ def server(input, output, session):
         ref = effective_reference()
         audio_path = ref[0] if ref else None
         ref_id = get_reference_id(audio_path)
-        voice_name = Path(ref[1]).stem if ref and ref[1] else None
+        voice_name = saved_reference_name(ref)
         text, status, should_run = resolve_reference_transcript(
             ref_id,
             transcript_cache(),
@@ -1333,6 +1359,7 @@ def server(input, output, session):
         ref_transcript_value.set(text)
         ui.update_text_area("ref_transcript", value=text)
         transcription_status.set(status)
+        transcription_error.set("")
 
         if should_run and audio_path:
             new_pending = set(pending_transcriptions())
@@ -1347,7 +1374,7 @@ def server(input, output, session):
         if not ref:
             return
         ref_id = get_reference_id(ref[0])
-        voice_name = Path(ref[1]).stem if ref[1] else None
+        voice_name = saved_reference_name(ref)
         text = input.ref_transcript()
         new_cache = record_user_transcript_edit(
             ref_id,
@@ -1357,6 +1384,7 @@ def server(input, output, session):
             voices_dir=VOICE_SAMPLES_DIR,
         )
         transcript_cache.set(new_cache)
+        ref_transcript_value.set(text or "")
 
     @render.ui
     def engine_badge():
@@ -1440,6 +1468,8 @@ def server(input, output, session):
 
         export_voice_url = session.dynamic_route("export-voice", serve_selected_voice)
         export_all_url = session.dynamic_route("export-all-voices", serve_all_voices)
+        with reactive.isolate():
+            selected = input.voice_library() if input.voice_library.is_set() else None
 
         return ui.div(
             {"class": "library-controls"},
@@ -1447,7 +1477,7 @@ def server(input, output, session):
                 "voice_library",
                 "Saved voices",
                 choices={v: v for v in voices},
-                selected=voices[0],
+                selected=selected if selected in voices else voices[0],
             ),
             ui.tags.a(
                 icon_svg("download"),
@@ -1553,6 +1583,8 @@ def server(input, output, session):
                 save_path.write_bytes(wav_bytes)
             finally:
                 tmp_path.unlink(missing_ok=True)
+
+            _save_voice_metadata(name, {"transcript": ""}, VOICE_SAMPLES_DIR)
 
             last_recorded_path.set(str(save_path))
             last_recorded_name.set(name)
@@ -1676,7 +1708,7 @@ def server(input, output, session):
         if start >= end:
             ui.notification_show("Start time must be less than end time.", type="warning")
             return
-        target = session_dir / f"trimmed_{Path(datapath).name}"
+        target = session_dir / f"trimmed_{uuid.uuid4().hex}.wav"
         try:
             slice_audio(datapath, start_sec=start, end_sec=end, output_path=target)
             trimmed_reference_path.set(str(target))
@@ -1705,6 +1737,7 @@ def server(input, output, session):
         new_pending.add(ref_id)
         pending_transcriptions.set(new_pending)
         transcription_status.set("transcribing")
+        transcription_error.set("")
         new_cache = dict(transcript_cache())
         new_cache.pop(ref_id, None)
         transcript_cache.set(new_cache)
@@ -1809,6 +1842,8 @@ def server(input, output, session):
             return ui.div()
 
         status = transcription_status()
+        with reactive.isolate():
+            transcript_text = ref_transcript_value()
         if status == "transcribing":
             status_badge = ui.span(
                 {"class": "transcript-status transcribing"}, icon_svg("spinner"), "Transcribing..."
@@ -1826,7 +1861,7 @@ def server(input, output, session):
             content = ui.input_text_area(
                 "ref_transcript",
                 None,
-                value=ref_transcript_value(),
+                value=transcript_text,
                 placeholder="Exact words spoken in the reference recording...",
                 rows=3,
                 width="100%",
@@ -1856,7 +1891,7 @@ def server(input, output, session):
             content = ui.input_text_area(
                 "ref_transcript",
                 None,
-                value=ref_transcript_value(),
+                value=transcript_text,
                 placeholder="Exact words spoken in the reference recording...",
                 rows=3,
                 width="100%",
@@ -1867,7 +1902,7 @@ def server(input, output, session):
             content = ui.input_text_area(
                 "ref_transcript",
                 None,
-                value=ref_transcript_value(),
+                value=transcript_text,
                 placeholder="Exact words spoken in the reference recording...",
                 rows=3,
                 width="100%",
@@ -1899,6 +1934,9 @@ def server(input, output, session):
                 class_="transcript-card-caption",
             ),
             content,
+            ui.div(transcription_error(), class_="transcript-card-caption")
+            if status == "error"
+            else None,
             ui.div(
                 {"class": "transcript-footer"},
                 status_badge,
@@ -1948,8 +1986,17 @@ def server(input, output, session):
             ui.notification_show(validation, type="warning")
             return
 
-        ref_text = (input.ref_transcript() or "").strip()
+        ref_text = ref_transcript_value().strip()
         speed = float(input.synthesis_speed() or 1.0)
+        generation_request.set(
+            {
+                "voice": Path(ref[1]).stem,
+                "engine": input.engine() or "qwen",
+                "quality": input.quality() or "high",
+                "speed": speed,
+                "snippet": (text[:60] + "…") if len(text) > 60 else text,
+            }
+        )
 
         output_audio_path.set(None)
         generation_stage.set("prepare")
@@ -1981,6 +2028,7 @@ def server(input, output, session):
         ui.update_action_button("btn_cancel", disabled=not running)
 
     @reactive.effect
+    @reactive.event(run_synthesis.status)
     def _save_result():
         if run_synthesis.status() != "success":
             return
@@ -1990,18 +2038,11 @@ def server(input, output, session):
         ui.notification_show("Your cloned voice is ready.", type="message")
 
         _, duration = waveform
-        current_ref = effective_reference()
-        voice_label = Path(current_ref[1]).stem if current_ref else "custom"
-        text = (input.speech_text() or "").strip()
         take_info = {
+            **generation_request(),
             "id": uuid.uuid4().hex[:6],
             "time": time.strftime("%H:%M:%S"),
-            "voice": voice_label,
-            "engine": input.engine() or "qwen",
-            "quality": input.quality() or "high",
-            "speed": float(input.synthesis_speed() or 1.0),
             "duration": duration,
-            "snippet": (text[:60] + "…") if len(text) > 60 else text,
             "path": path,
         }
         session_takes.set([take_info] + session_takes()[:9])
@@ -2027,7 +2068,7 @@ def server(input, output, session):
             message, detail = "Audio ready", "The cloned voice is ready to play and download."
         elif status == "error":
             fill_width = (active_index / 3) * 80
-            message, detail = "Generation stopped", "Review the error notification and try again."
+            message, detail = "Generation stopped", str(run_synthesis.error())
         elif status == "running":
             fill_width = (active_index / 3) * 80
             message, detail = "Synthesizing natural speech", snapshot[active_index].detail
@@ -2269,8 +2310,10 @@ def server(input, output, session):
         sel_a = takes[0]["id"]
         sel_b = takes[1]["id"]
 
-        take_a_obj = next((t for t in takes if t["id"] == (input.ab_select_a() or sel_a)), takes[0])
-        take_b_obj = next((t for t in takes if t["id"] == (input.ab_select_b() or sel_b)), takes[1])
+        selected_a = input.ab_select_a() if input.ab_select_a.is_set() else sel_a
+        selected_b = input.ab_select_b() if input.ab_select_b.is_set() else sel_b
+        take_a_obj = next((t for t in takes if t["id"] == selected_a), takes[0])
+        take_b_obj = next((t for t in takes if t["id"] == selected_b), takes[1])
 
         url_a = session.dynamic_route(
             f"ab-audio-a-{take_a_obj['id']}",
@@ -2288,17 +2331,22 @@ def server(input, output, session):
                 ui.div(
                     {"class": "ab-track-column"},
                     ui.h4("Track A", class_="ab-track-title"),
-                    ui.input_select("ab_select_a", None, choices=choices, selected=sel_a),
+                    ui.input_select(
+                        "ab_select_a", None, choices=choices, selected=take_a_obj["id"]
+                    ),
                     ui.tags.audio(controls=True, preload="none", src=url_a, class_="w-100"),
                 ),
                 ui.div(
                     {"class": "ab-track-column"},
                     ui.h4("Track B", class_="ab-track-title"),
-                    ui.input_select("ab_select_b", None, choices=choices, selected=sel_b),
+                    ui.input_select(
+                        "ab_select_b", None, choices=choices, selected=take_b_obj["id"]
+                    ),
                     ui.tags.audio(controls=True, preload="none", src=url_b, class_="w-100"),
                 ),
             ),
             class_="ab-comparison-card",
+            open=True,
         )
 
 

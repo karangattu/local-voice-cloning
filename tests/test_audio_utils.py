@@ -283,10 +283,16 @@ def test_slice_audio_invalid_range(tmp_path):
     )
     sf.write(str(source), tone, sr)
 
-    sliced, out_sr = slice_audio(source, 3.0, 1.0, out)
-    assert out_sr == sr
-    assert len(sliced) == sr * 1
-    assert out.exists()
+    with pytest.raises(ValueError):
+        slice_audio(source, 3.0, 1.0, out)
+    assert not out.exists()
+
+
+def test_slice_audio_rejects_start_past_end_of_recording(tmp_path):
+    source = tmp_path / "short.wav"
+    sf.write(source, np.ones(24000, dtype=np.float32), 24000)
+    with pytest.raises(ValueError):
+        slice_audio(source, 2.0, 3.0)
 
 
 def test_slice_audio_clamped_end(tmp_path):

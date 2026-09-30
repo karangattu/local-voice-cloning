@@ -40,6 +40,28 @@ class ToneTTSModel(FakeTTSModel):
         yield SimpleNamespace(audio=tone, sample_rate=self.sample_rate)
 
 
+@pytest.mark.parametrize("engine", ["qwen", "chatterbox"])
+def test_speaking_pace_changes_duration_without_changing_pitch(sample_voice_file, engine):
+    sr = 24000
+    tone = (0.2 * np.sin(2 * np.pi * 440 * np.arange(sr) / sr)).astype(np.float32)
+
+    class Model:
+        sample_rate = 24000
+        sr = 24000
+
+        def generate(self, *args, **kwargs):
+            if engine == "chatterbox":
+                return tone
+            return iter([SimpleNamespace(audio=tone, sample_rate=sr)])
+
+    cloner = cloner_module.LocalVoiceCloner(engine=engine, tts_loader=lambda _: Model())
+    result = cloner.clone_voice(sample_voice_file, "Hello", reference_text="Hi", speed=1.25)
+    assert result.duration_seconds == pytest.approx(0.8, abs=0.02)
+    spectrum = np.abs(np.fft.rfft(result.audio))
+    peak_hz = np.argmax(spectrum) * sr / len(result.audio)
+    assert peak_hz == pytest.approx(440, abs=3)
+
+
 @pytest.fixture
 def sample_voice_file(tmp_path):
     sr = 24000
@@ -101,7 +123,7 @@ def test_clone_voice_uses_reference_transcript_and_reports_real_stages(sample_vo
     call = tts_model.calls[0]
     assert call["text"] == "Hello there."
     assert call["ref_text"] == "Words from the recording."
-    assert call["speed"] == 1.1
+    assert call["speed"] == 1.0
     assert call["lang_code"] == "English"
     assert call["stream"] is False
     assert call["ref_audio"].endswith(".wav")

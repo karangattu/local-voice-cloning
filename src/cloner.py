@@ -331,7 +331,7 @@ class LocalVoiceCloner:
             tts_model = self._ensure_tts_model()
 
             transcript = reference_text.strip()
-            if not transcript:
+            if not transcript and self.engine != "chatterbox":
                 transcript = self._transcribe_canonical(canonical_ref_path)
 
             notify("voice")
@@ -370,7 +370,7 @@ class LocalVoiceCloner:
                             text=segment,
                             ref_audio=str(canonical_ref_path),
                             ref_text=transcript,
-                            speed=speed,
+                            speed=1.0,
                             lang_code=language,
                             stream=False,
                             verbose=False,
@@ -390,6 +390,10 @@ class LocalVoiceCloner:
                     piece = trim_silence(
                         piece, sample_rate, threshold_db=-70.0, padding_seconds=0.0
                     )
+                    if self.engine != "omnivoice" and speed != 1.0 and len(piece):
+                        from librosa.effects import time_stretch
+
+                        piece = time_stretch(piece, rate=speed)
                     pieces.append((piece, pause))
             generated = join_with_room_tone(pieces, sample_rate)
 
