@@ -1,8 +1,10 @@
+import importlib.util
 import json
 import os
 import re
 import tempfile
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -70,6 +72,25 @@ def sidecar_transcript(reference_audio_path: str | Path) -> str:
     if not isinstance(transcript, str):
         return ""
     return transcript.strip()
+
+
+def transcribe_backend_available() -> bool:
+    """Whether the Whisper transcription backend (mlx-audio) can be imported."""
+    try:
+        return importlib.util.find_spec("mlx_audio.stt") is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _load_model(loader: Callable[[str], Any], model_id: str) -> Any:
+    """Load a checkpoint, turning bare download OSErrors into an actionable message."""
+    try:
+        return loader(model_id)
+    except OSError as exc:
+        raise RuntimeError(
+            f"model download failed for {model_id}; "
+            f"check network/HF access and rerun warmup (original error: {exc})"
+        ) from exc
 
 
 def _load_tts_model(model_id: str):
@@ -264,7 +285,7 @@ class LocalVoiceCloner:
         if self._tts_model is None:
             with self._model_lock:
                 if self._tts_model is None:
-                    self._tts_model = self._tts_loader(self.model_id)
+                    self._tts_model = _load_model(self._tts_loader, self.model_id)
                     if self.engine == "omnivoice":
                         attr = "sampling_rate"
                     elif self.engine == "chatterbox":
@@ -278,8 +299,24 @@ class LocalVoiceCloner:
         if self._stt_model is None:
             with self._model_lock:
                 if self._stt_model is None:
-                    self._stt_model = self._stt_loader(ASR_MODEL_ID)
+                    self._stt_model = _load_model(self._stt_loader, ASR_MODEL_ID)
         return self._stt_model
+
+    def warmup(self, include_transcriber: bool = False) -> dict[str, float]:
+        """Fetch and load models outside a synthesis request.
+
+        Returns the load time in seconds per stage. Model-download failures raise
+        RuntimeError with an actionable message instead of a bare OSError.
+        """
+        timings: dict[str, float] = {}
+        started = time.perf_counter()
+        self._ensure_tts_model()
+        timings["tts"] = time.perf_counter() - started
+        if include_transcriber:
+            started = time.perf_counter()
+            self._ensure_stt_model()
+            timings["transcribe"] = time.perf_counter() - started
+        return timings
 
     def _transcribe_canonical(self, canonical_ref_path: Path | str) -> str:
         stt_result = self._ensure_stt_model().generate(

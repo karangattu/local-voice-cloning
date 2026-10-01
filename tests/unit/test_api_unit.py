@@ -1,5 +1,6 @@
 """Fast tests for API metadata and request validation."""
 
+import importlib.metadata
 import json
 from types import SimpleNamespace
 
@@ -147,6 +148,21 @@ def test_transcribe_rejects_unknown_quality(reference_wav):
     assert "Unknown quality" in response.json()["detail"]
 
 
+class StubCloner:
+    model_id = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16"
+
+    def __init__(self, error: Exception | None = None):
+        self.error = error
+        self.model_loaded = error is None
+        self.warmup_calls: list[bool] = []
+
+    def warmup(self, include_transcriber: bool = False):
+        self.warmup_calls.append(include_transcriber)
+        if self.error is not None:
+            raise self.error
+        return {"tts": 0.25, "transcribe": 0.1}
+
+
 class RecordingCloner:
     def __init__(self):
         self.clone_kwargs: dict | None = None
@@ -158,6 +174,100 @@ class RecordingCloner:
             sample_rate=24000,
             duration_seconds=0.1,
         )
+
+
+def test_health_reports_version_and_capabilities():
+    body = client.get("/health").json()
+    assert body["status"] == "ok"
+    assert "model_loaded" in body
+    assert body["version"]["package"] == importlib.metadata.version("local-voice-cloning")
+    assert isinstance(body["version"]["git"], str)
+    assert body["version"]["git"]
+    capabilities = body["capabilities"]
+    assert capabilities["speed_control"] == (
+        "post-stretch (librosa) for qwen/chatterbox, native for omnivoice"
+    )
+    assert isinstance(capabilities["transcribe"], bool)
+    assert capabilities["sidecar_transcripts"] is True
+
+
+def test_git_version_prefers_version_file(tmp_path, monkeypatch):
+    stamp = tmp_path / "GIT_VERSION"
+    stamp.write_text("abc1234\n", encoding="utf-8")
+    monkeypatch.setattr(api_module, "GIT_VERSION_FILE", stamp)
+    assert api_module._git_version() == "abc1234"
+
+
+def test_git_version_falls_back_to_git_then_unknown(tmp_path, monkeypatch):
+    monkeypatch.setattr(api_module, "GIT_VERSION_FILE", tmp_path / "missing")
+    monkeypatch.setattr(
+        api_module.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout="deadbee\n"),
+    )
+    assert api_module._git_version() == "deadbee"
+
+    def no_git(*args, **kwargs):
+        raise OSError("git not available")
+
+    monkeypatch.setattr(api_module.subprocess, "run", no_git)
+    assert api_module._git_version() == "unknown"
+
+
+def test_warmup_loads_models_and_reports_timing(mocker):
+    stub = StubCloner()
+    mocker.patch("src.api.get_shared_cloner", return_value=stub)
+
+    response = client.post("/warmup", data={"engine": "qwen", "quality": "high"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["engine"] == "qwen"
+    assert body["quality"] == "high"
+    assert body["model_id"] == stub.model_id
+    assert body["model_loaded"] is True
+    assert body["stages"] == {"tts": 0.25, "transcribe": 0.1}
+    assert body["load_seconds"] == pytest.approx(0.35)
+    assert stub.warmup_calls == [True]
+
+
+def test_warmup_skips_transcriber_for_chatterbox(mocker):
+    stub = StubCloner()
+    mocker.patch("src.api.get_shared_cloner", return_value=stub)
+
+    response = client.post("/warmup", data={"engine": "chatterbox", "quality": "fast"})
+
+    assert response.status_code == 200
+    assert stub.warmup_calls == [False]
+
+
+def test_warmup_rejects_unknown_quality_and_engine():
+    response = client.post("/warmup", data={"engine": "qwen", "quality": "ultra"})
+    assert response.status_code == 422
+    assert "Unknown quality" in response.json()["detail"]
+
+    response = client.post("/warmup", data={"engine": "f5", "quality": "high"})
+    assert response.status_code == 422
+    assert "Unknown engine" in response.json()["detail"]
+
+
+def test_warmup_failures_include_traceback(mocker):
+    stub = StubCloner(
+        error=RuntimeError(
+            "model download failed for mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16; "
+            "check network/HF access and rerun warmup"
+        )
+    )
+    mocker.patch("src.api.get_shared_cloner", return_value=stub)
+
+    response = client.post("/warmup", data={"engine": "qwen", "quality": "high"})
+
+    assert response.status_code == 500
+    body = response.json()
+    assert body["detail"].startswith("Warmup failed:")
+    assert "model download failed" in body["detail"]
+    assert "Traceback (most recent call last)" in body["traceback"]
 
 
 def test_synthesize_failures_include_traceback(reference_wav, mocker):

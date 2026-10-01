@@ -11,6 +11,8 @@ Example:
         -o cloned.mp3
 """
 
+import importlib.metadata
+import subprocess
 import tempfile
 import traceback
 from pathlib import Path
@@ -32,12 +34,15 @@ from src.cloner import (
     is_shared_cloner_loaded,
     model_id_for_quality,
     sidecar_transcript,
+    transcribe_backend_available,
     validate_engine,
 )
 
 MEDIA_TYPES = {"wav": "audio/wav", "mp3": "audio/mpeg"}
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
-SAVED_VOICES_DIR = Path(__file__).resolve().parent.parent / "voice_samples"
+SERVICE_DIR = Path(__file__).resolve().parent.parent
+GIT_VERSION_FILE = SERVICE_DIR / "GIT_VERSION"
+SAVED_VOICES_DIR = SERVICE_DIR / "voice_samples"
 
 app = FastAPI(
     title="Local Voice Cloning API",
@@ -73,11 +78,51 @@ async def http_exception_with_traceback(request: Request, exc: HTTPException) ->
     )
 
 
+def _package_version() -> str:
+    try:
+        return importlib.metadata.version("local-voice-cloning")
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
+
+
+def _git_version() -> str:
+    """Short git SHA from a GIT_VERSION file or git itself; "unknown" when unavailable."""
+    try:
+        if GIT_VERSION_FILE.is_file():
+            stamp = GIT_VERSION_FILE.read_text(encoding="utf-8").strip()
+            if stamp:
+                return stamp
+    except OSError:
+        pass
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+            cwd=SERVICE_DIR,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    return completed.stdout.strip() or "unknown"
+
+
+PACKAGE_VERSION = _package_version()
+GIT_VERSION = _git_version()
+
+
 @app.get("/health")
 def health():
     return {
         "status": "ok",
         "model_loaded": is_shared_cloner_loaded(),
+        "version": {"package": PACKAGE_VERSION, "git": GIT_VERSION},
+        "capabilities": {
+            "speed_control": "post-stretch (librosa) for qwen/chatterbox, native for omnivoice",
+            "transcribe": transcribe_backend_available(),
+            "sidecar_transcripts": True,
+        },
     }
 
 
@@ -100,6 +145,49 @@ def info():
         "supported_languages": list(SUPPORTED_LANGUAGES),
         "model_loaded": is_shared_cloner_loaded(),
         "supported_output_formats": sorted(SUPPORTED_OUTPUT_FORMATS),
+    }
+
+
+@app.post("/warmup")
+def warmup(
+    engine: Annotated[str, Form(description="Voice engine: qwen, omnivoice, or chatterbox")] = "qwen",
+    quality: Annotated[
+        str,
+        Form(description="Quality: Qwen BF16/8-bit; OmniVoice 32/16 steps; Chatterbox full/Turbo"),
+    ] = "high",
+):
+    """Fetch and load model weights outside a synthesis or transcription request."""
+    quality = quality.lower().strip()
+    try:
+        model_id_for_quality(quality)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    engine = engine.lower().strip()
+    try:
+        validate_engine(engine)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    cloner = get_shared_cloner(quality, engine=engine)
+    try:
+        timings = cloner.warmup(include_transcriber=engine != "chatterbox")
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    except Exception as e:
+        raise APIError(
+            status_code=500,
+            detail=f"Warmup failed: {e}",
+            traceback_text=traceback.format_exc(),
+        ) from e
+
+    return {
+        "status": "ok",
+        "engine": engine,
+        "quality": quality,
+        "model_id": cloner.model_id,
+        "model_loaded": cloner.model_loaded,
+        "stages": {stage: round(seconds, 3) for stage, seconds in timings.items()},
+        "load_seconds": round(sum(timings.values()), 3),
     }
 
 

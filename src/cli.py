@@ -12,15 +12,16 @@ def parse_args(args=None):
         "-r",
         "--reference",
         type=str,
-        required=True,
-        help="Path to the reference audio file of the voice you want to clone.",
+        default=None,
+        help="Path to the reference audio file of the voice you want to clone "
+        "(required unless --warmup).",
     )
     parser.add_argument(
         "-t",
         "--text",
         type=str,
-        required=True,
-        help="Text to synthesize with the cloned voice.",
+        default=None,
+        help="Text to synthesize with the cloned voice (required unless --warmup).",
     )
     parser.add_argument(
         "--ref-text",
@@ -76,7 +77,15 @@ def parse_args(args=None):
         default=None,
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--warmup",
+        action="store_true",
+        help="Download and load the models ahead of time, then exit. "
+        "Prints the load time per model; --reference and --text are not needed.",
+    )
     parsed = parser.parse_args(args)
+    if not parsed.warmup and (parsed.reference is None or parsed.text is None):
+        parser.error("--reference and --text are required unless --warmup is given")
     if parsed.engine == "qwen" and parsed.language not in SUPPORTED_LANGUAGES:
         parser.error(f"Unsupported Qwen language: {parsed.language}")
     if parsed.engine == "chatterbox" and parsed.language not in CHATTERBOX_LANGUAGES:
@@ -87,8 +96,24 @@ def parse_args(args=None):
     return parsed
 
 
+def run_warmup(args) -> None:
+    cloner = LocalVoiceCloner(quality=args.quality, engine=args.engine)
+    print(f"Warming up {cloner.engine_name} ({args.quality}) on {cloner.device}...")
+    try:
+        timings = cloner.warmup(include_transcriber=args.engine != "chatterbox")
+    except (OSError, RuntimeError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    for stage, seconds in timings.items():
+        print(f"  {stage}: {seconds:.2f}s")
+    print(f"Model {cloner.model_id} ready.")
+
+
 def main():
     args = parse_args()
+    if args.warmup:
+        run_warmup(args)
+        return
     ref_path = Path(args.reference)
     if not ref_path.exists():
         print(f"Error: Reference audio file not found at '{args.reference}'", file=sys.stderr)

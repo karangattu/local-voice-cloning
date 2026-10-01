@@ -313,3 +313,34 @@ def test_clone_voice_prefers_explicit_reference_text_over_sidecar(sample_voice_f
 
     assert tts_model.calls[0]["ref_text"] == "Explicit words."
     assert stt_model.calls == []
+
+
+def test_warmup_loads_models_and_reports_timing():
+    loaded: list[str] = []
+    cloner = cloner_module.LocalVoiceCloner(
+        tts_loader=lambda model_id: loaded.append(model_id) or FakeTTSModel(),
+        stt_loader=lambda model_id: loaded.append(model_id) or FakeSTTModel(),
+    )
+
+    timings = cloner.warmup(include_transcriber=True)
+
+    assert set(timings) == {"tts", "transcribe"}
+    assert all(seconds >= 0 for seconds in timings.values())
+    assert loaded == [cloner_module.MODEL_VARIANTS["high"], cloner_module.ASR_MODEL_ID]
+    assert cloner.model_loaded is True
+
+    cloner.warmup(include_transcriber=True)
+    assert loaded == [cloner_module.MODEL_VARIANTS["high"], cloner_module.ASR_MODEL_ID]
+
+
+def test_warmup_wraps_download_errors():
+    def failing_loader(_model_id):
+        raise OSError("[Errno 5] Input/output error")
+
+    cloner = cloner_module.LocalVoiceCloner(tts_loader=failing_loader)
+
+    with pytest.raises(RuntimeError, match="model download failed for") as excinfo:
+        cloner.warmup()
+    message = str(excinfo.value)
+    assert cloner_module.MODEL_VARIANTS["high"] in message
+    assert "check network/HF access and rerun warmup" in message

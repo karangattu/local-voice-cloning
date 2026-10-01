@@ -33,6 +33,49 @@ def test_parse_args_english_language():
     assert args.language == "English"
 
 
+def test_parse_args_warmup():
+    args = parse_args(["--warmup", "--engine", "qwen", "--quality", "fast"])
+    assert args.warmup is True
+    assert args.engine == "qwen"
+    assert args.quality == "fast"
+    assert args.reference is None
+    assert args.text is None
+
+
+def test_parse_args_requires_reference_and_text_unless_warmup():
+    with pytest.raises(SystemExit) as exc:
+        parse_args([])
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize(
+    ("engine", "include_transcriber"),
+    [("qwen", True), ("omnivoice", True), ("chatterbox", False)],
+)
+def test_main_warmup_loads_models(mocker, engine, include_transcriber):
+    cloner = mocker.patch("src.cli.LocalVoiceCloner")
+    cloner.return_value.warmup.return_value = {"tts": 0.5}
+    cloner.return_value.model_id = "model-id"
+
+    with patch("sys.argv", ["cli.py", "--warmup", "--engine", engine]):
+        main()
+
+    cloner.return_value.warmup.assert_called_once_with(include_transcriber=include_transcriber)
+
+
+def test_main_warmup_failure_exits_one(mocker, capsys):
+    cloner = mocker.patch("src.cli.LocalVoiceCloner")
+    cloner.return_value.warmup.side_effect = RuntimeError(
+        "model download failed for model-id; check network/HF access and rerun warmup"
+    )
+
+    with patch("sys.argv", ["cli.py", "--warmup"]), pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 1
+    assert "model download failed" in capsys.readouterr().err
+
+
 def test_main_file_not_found():
     with patch("sys.argv", ["cli.py", "--reference", "non_existent.wav", "--text", "Test"]):
         with pytest.raises(SystemExit) as exc:

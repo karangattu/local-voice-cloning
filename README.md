@@ -51,6 +51,7 @@ Options:
 - `--language`: Output language. The default value is `auto`. Chatterbox accepts English only.
 - `--engine`: `qwen` (default), `omnivoice`, or `chatterbox`
 - `--ref-text`: Transcript of reference audio (transcribed automatically if omitted)
+- `--warmup`: Download and load the models ahead of time, then exit. Prints the load time per model; `--reference` and `--text` are not needed.
 
 ## REST API
 
@@ -78,6 +79,16 @@ curl -X POST http://127.0.0.1:8001/synthesize \
   -F "engine=chatterbox" \
   -o output.wav
 ```
+
+Warm up before the first request to download and load model weights outside a synthesis request:
+
+```bash
+curl -X POST http://127.0.0.1:8001/warmup -F "engine=qwen" -F "quality=high"
+```
+
+The response reports the loaded `model_id` and the load time per stage. A failed download returns a 500 with an actionable message instead of a bare I/O error.
+
+`GET /health` reports `version` (the package version and git revision of the running process) and `capabilities` (speed control, transcription, sidecar transcripts) so clients can detect stale servers.
 
 Failed requests keep their status codes and add a `traceback` field with the full Python traceback; the service binds to loopback only. When `/transcribe` cannot run (missing transcription backend or failed model download), it returns 422 with guidance: pass `ref_text` directly to `/synthesize`, or store the transcript in the reference's sidecar file.
 
