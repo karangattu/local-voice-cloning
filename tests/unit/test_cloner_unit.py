@@ -1,5 +1,6 @@
 """Fast behavioral tests for the Qwen3-TTS MLX voice-cloning engine."""
 
+import json
 from types import SimpleNamespace
 
 import numpy as np
@@ -261,3 +262,54 @@ def test_unload_shared_cloners():
     count = cloner.unload_shared_cloners()
     assert count >= 2
     assert len(cloner._shared_cloners) == 0
+
+
+def test_sidecar_transcript_reads_json_next_to_reference(tmp_path):
+    ref_path = tmp_path / "ref.wav"
+    ref_path.write_bytes(b"")
+    assert cloner_module.sidecar_transcript(ref_path) == ""
+
+    (tmp_path / "ref.json").write_text("not json", encoding="utf-8")
+    assert cloner_module.sidecar_transcript(ref_path) == ""
+
+    (tmp_path / "ref.json").write_text(json.dumps({"transcript": 3}), encoding="utf-8")
+    assert cloner_module.sidecar_transcript(ref_path) == ""
+
+    (tmp_path / "ref.json").write_text(
+        json.dumps({"transcript": "  Padded words.  ", "reference_id": "x"}), encoding="utf-8"
+    )
+    assert cloner_module.sidecar_transcript(ref_path) == "Padded words."
+
+
+def test_clone_voice_prefers_sidecar_transcript_over_transcription(sample_voice_file):
+    sample_voice_file.with_suffix(".json").write_text(
+        json.dumps({"transcript": "Words from the sidecar."}), encoding="utf-8"
+    )
+    tts_model = FakeTTSModel()
+    stt_model = FakeSTTModel()
+    cloner = cloner_module.LocalVoiceCloner(
+        tts_loader=lambda _model_id: tts_model,
+        stt_loader=lambda _model_id: stt_model,
+    )
+
+    cloner.clone_voice(sample_voice_file, text="Hello")
+
+    assert tts_model.calls[0]["ref_text"] == "Words from the sidecar."
+    assert stt_model.calls == []
+
+
+def test_clone_voice_prefers_explicit_reference_text_over_sidecar(sample_voice_file):
+    sample_voice_file.with_suffix(".json").write_text(
+        json.dumps({"transcript": "Words from the sidecar."}), encoding="utf-8"
+    )
+    tts_model = FakeTTSModel()
+    stt_model = FakeSTTModel()
+    cloner = cloner_module.LocalVoiceCloner(
+        tts_loader=lambda _model_id: tts_model,
+        stt_loader=lambda _model_id: stt_model,
+    )
+
+    cloner.clone_voice(sample_voice_file, text="Hello", reference_text="Explicit words.")
+
+    assert tts_model.calls[0]["ref_text"] == "Explicit words."
+    assert stt_model.calls == []

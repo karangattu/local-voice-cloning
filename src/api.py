@@ -30,11 +30,13 @@ from src.cloner import (
     get_shared_cloner,
     is_shared_cloner_loaded,
     model_id_for_quality,
+    sidecar_transcript,
     validate_engine,
 )
 
 MEDIA_TYPES = {"wav": "audio/wav", "mp3": "audio/mpeg"}
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+SAVED_VOICES_DIR = Path(__file__).resolve().parent.parent / "voice_samples"
 
 app = FastAPI(
     title="Local Voice Cloning API",
@@ -73,6 +75,18 @@ def info():
         "model_loaded": is_shared_cloner_loaded(),
         "supported_output_formats": sorted(SUPPORTED_OUTPUT_FORMATS),
     }
+
+
+def _uploaded_sidecar_transcript(filename: str | None) -> str:
+    """Sidecar transcript for an uploaded reference clip.
+
+    Looks next to the client's file when the service shares its filesystem,
+    then in the saved-voice library by file name (voice_samples/<name>.json).
+    """
+    if not filename:
+        return ""
+    name = Path(filename)
+    return sidecar_transcript(name) or sidecar_transcript(SAVED_VOICES_DIR / name.name)
 
 
 @app.post("/transcribe")
@@ -181,6 +195,7 @@ async def synthesize(
         raise HTTPException(status_code=413, detail="Reference audio exceeds the 50 MB limit.")
 
     ref_suffix = Path(reference_audio.filename or "reference.wav").suffix or ".wav"
+    reference_text = ref_text.strip() or _uploaded_sidecar_transcript(reference_audio.filename)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         ref_path = Path(tmpdir) / f"reference{ref_suffix}"
@@ -190,7 +205,7 @@ async def synthesize(
             result = get_shared_cloner(quality, engine=engine).clone_voice(
                 reference_audio_path=ref_path,
                 text=text,
-                reference_text=ref_text,
+                reference_text=reference_text,
                 speed=speed,
                 language=language,
                 nfe_step=steps,

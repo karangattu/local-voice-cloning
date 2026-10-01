@@ -1,10 +1,14 @@
 """Fast tests for API metadata and request validation."""
 
+import json
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 import soundfile as sf
 from fastapi.testclient import TestClient
 
+import src.api as api_module
 from src.api import app
 
 client = TestClient(app)
@@ -141,4 +145,48 @@ def test_transcribe_rejects_unknown_quality(reference_wav):
         )
     assert response.status_code == 422
     assert "Unknown quality" in response.json()["detail"]
+
+
+class RecordingCloner:
+    def __init__(self):
+        self.clone_kwargs: dict | None = None
+
+    def clone_voice(self, **kwargs):
+        self.clone_kwargs = kwargs
+        return SimpleNamespace(
+            audio=np.zeros(2400, dtype=np.float32),
+            sample_rate=24000,
+            duration_seconds=0.1,
+        )
+
+
+def test_synthesize_uses_saved_voice_sidecar_transcript(reference_wav, tmp_path, mocker):
+    voices = tmp_path / "voices"
+    voices.mkdir()
+    (voices / "karan.json").write_text(
+        json.dumps({"transcript": "Words from the sidecar."}), encoding="utf-8"
+    )
+    mocker.patch.object(api_module, "SAVED_VOICES_DIR", voices)
+    recorder = RecordingCloner()
+    mocker.patch("src.api.get_shared_cloner", return_value=recorder)
+
+    with open(reference_wav, "rb") as f:
+        response = client.post(
+            "/synthesize",
+            files={"reference_audio": ("karan.wav", f, "audio/wav")},
+            data={"text": "Hello", "output_format": "wav"},
+        )
+
+    assert response.status_code == 200
+    assert recorder.clone_kwargs["reference_text"] == "Words from the sidecar."
+
+    with open(reference_wav, "rb") as f:
+        response = client.post(
+            "/synthesize",
+            files={"reference_audio": ("karan.wav", f, "audio/wav")},
+            data={"text": "Hello", "ref_text": "Explicit words."},
+        )
+
+    assert response.status_code == 200
+    assert recorder.clone_kwargs["reference_text"] == "Explicit words."
 

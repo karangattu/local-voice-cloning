@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import tempfile
@@ -50,6 +51,25 @@ SUPPORTED_LANGUAGES = (
     "Spanish",
 )
 ProgressCallback = Callable[[str], None]
+
+
+def sidecar_transcript(reference_audio_path: str | Path) -> str:
+    """Transcript stored in a JSON sidecar next to a reference clip, if any.
+
+    The sidecar shares the clip's stem and adds .json, e.g. voice_samples/karan.wav
+    -> voice_samples/karan.json containing {"transcript": "...", "reference_id": "..."}.
+    """
+    sidecar_path = Path(reference_audio_path).with_suffix(".json")
+    if not sidecar_path.is_file():
+        return ""
+    try:
+        metadata = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    transcript = metadata.get("transcript", "") if isinstance(metadata, dict) else ""
+    if not isinstance(transcript, str):
+        return ""
+    return transcript.strip()
 
 
 def _load_tts_model(model_id: str):
@@ -331,6 +351,8 @@ class LocalVoiceCloner:
             tts_model = self._ensure_tts_model()
 
             transcript = reference_text.strip()
+            if not transcript:
+                transcript = sidecar_transcript(reference_audio_path) or ""
             if not transcript and self.engine != "chatterbox":
                 transcript = self._transcribe_canonical(canonical_ref_path)
 

@@ -79,6 +79,16 @@ curl -X POST http://127.0.0.1:8001/synthesize \
   -o output.wav
 ```
 
+### Reference transcripts (sidecar JSON)
+
+When `ref_text` is empty, a transcript stored next to the reference audio is used instead of running transcription. The sidecar shares the audio file's stem and adds `.json`, e.g. `voice_samples/karan.wav` → `voice_samples/karan.json`:
+
+```json
+{ "transcript": "Words from the recording.", "reference_id": "..." }
+```
+
+Only the `transcript` key is required. For uploaded references, `/synthesize` also finds the sidecar in the saved-voice library (`voice_samples/<name>.json`) when the uploaded file name matches a saved voice.
+
 ## Voice engines
 
 Qwen3-TTS is the default engine. It runs on Apple MLX and needs no other package. OmniVoice supports more than 600 languages. It needs the `omnivoice` extra. Chatterbox clones English voices. It needs the `chatterbox-tts` package.
