@@ -12,11 +12,12 @@ Example:
 """
 
 import tempfile
+import traceback
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import Response
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse, Response
 
 from src.audio_utils import SUPPORTED_OUTPUT_FORMATS, save_audio
 from src.cloner import (
@@ -45,6 +46,31 @@ app = FastAPI(
     "sample and text; receive synthesized speech as WAV or MP3.",
     version="2.1.0",
 )
+
+
+class APIError(HTTPException):
+    """HTTP error that also carries the original traceback.
+
+    The service binds to loopback only, so tracebacks in responses help clients
+    diagnose failures (e.g. interrupted model downloads) without server logs.
+    """
+
+    def __init__(self, status_code: int, detail: str, traceback_text: str) -> None:
+        super().__init__(status_code=status_code, detail=detail)
+        self.traceback_text = traceback_text
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_with_traceback(request: Request, exc: HTTPException) -> JSONResponse:
+    body: dict[str, str] = {"detail": exc.detail}
+    traceback_text = getattr(exc, "traceback_text", "")
+    if traceback_text:
+        body["traceback"] = traceback_text
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=body,
+        headers=getattr(exc, "headers", None),
+    )
 
 
 @app.get("/health")
@@ -117,8 +143,22 @@ async def transcribe(
             transcript = get_shared_cloner(quality).transcribe(ref_path)
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
-        except (OSError, RuntimeError) as e:
-            raise HTTPException(status_code=500, detail=f"Transcription failed: {e}") from e
+        except (OSError, RuntimeError, ImportError) as e:
+            raise APIError(
+                status_code=422,
+                detail=(
+                    f"Transcription failed: {e}. "
+                    "Pass ref_text directly to /synthesize, or place a transcript in the "
+                    "reference's .json sidecar (same stem as the audio, key 'transcript')."
+                ),
+                traceback_text=traceback.format_exc(),
+            ) from e
+        except Exception as e:
+            raise APIError(
+                status_code=500,
+                detail=f"Transcription failed: {e}",
+                traceback_text=traceback.format_exc(),
+            ) from e
 
     return {"transcript": transcript}
 
@@ -216,8 +256,12 @@ async def synthesize(
             audio_bytes = out_path.read_bytes()
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
-        except (OSError, RuntimeError) as e:
-            raise HTTPException(status_code=500, detail=f"Synthesis failed: {e}") from e
+        except Exception as e:
+            raise APIError(
+                status_code=500,
+                detail=f"Synthesis failed: {e}",
+                traceback_text=traceback.format_exc(),
+            ) from e
 
     return Response(
         content=audio_bytes,

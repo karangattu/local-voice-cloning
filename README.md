@@ -79,6 +79,8 @@ curl -X POST http://127.0.0.1:8001/synthesize \
   -o output.wav
 ```
 
+Failed requests keep their status codes and add a `traceback` field with the full Python traceback; the service binds to loopback only. When `/transcribe` cannot run (missing transcription backend or failed model download), it returns 422 with guidance: pass `ref_text` directly to `/synthesize`, or store the transcript in the reference's sidecar file.
+
 ### Reference transcripts (sidecar JSON)
 
 When `ref_text` is empty, a transcript stored next to the reference audio is used instead of running transcription. The sidecar shares the audio file's stem and adds `.json`, e.g. `voice_samples/karan.wav` → `voice_samples/karan.json`:
