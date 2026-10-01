@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 import json
 import os
@@ -5,6 +6,7 @@ import re
 import tempfile
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,6 +55,7 @@ SUPPORTED_LANGUAGES = (
     "Spanish",
 )
 ProgressCallback = Callable[[str], None]
+REFERENCE_CACHE_SIZE = 4
 
 
 def sidecar_transcript(reference_audio_path: str | Path) -> str:
@@ -72,6 +75,14 @@ def sidecar_transcript(reference_audio_path: str | Path) -> str:
     if not isinstance(transcript, str):
         return ""
     return transcript.strip()
+
+
+def reference_content_hash(reference_audio_path: str | Path) -> str:
+    """SHA-256 of a reference clip's bytes; keys the canonical-reference cache."""
+    path = Path(reference_audio_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Audio file not found: {reference_audio_path}")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def transcribe_backend_available() -> bool:
@@ -239,6 +250,45 @@ def detect_device() -> str:
     return "mlx"
 
 
+@dataclass(eq=False)
+class _CachedReference:
+    audio: np.ndarray
+    sample_rate: int
+    transcript: str | None = None
+
+
+class _ReferenceCache:
+    """Small LRU of canonicalized references keyed by content hash."""
+
+    def __init__(self, maxsize: int = REFERENCE_CACHE_SIZE) -> None:
+        self.maxsize = maxsize
+        self._entries: OrderedDict[str, _CachedReference] = OrderedDict()
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def get(self, key: str, sample_rate: int) -> _CachedReference | None:
+        entry = self._entries.get(key)
+        if entry is None or entry.sample_rate != sample_rate:
+            return None
+        self._entries.move_to_end(key)
+        return entry
+
+    def put(self, key: str, sample_rate: int, audio: np.ndarray) -> _CachedReference:
+        entry = _CachedReference(audio=audio, sample_rate=sample_rate)
+        self._entries[key] = entry
+        self._entries.move_to_end(key)
+        while len(self._entries) > self.maxsize:
+            self._entries.popitem(last=False)
+        return entry
+
+    def set_transcript(self, key: str, transcript: str) -> None:
+        entry = self._entries.get(key)
+        if entry is not None and transcript:
+            entry.transcript = transcript
+            self._entries.move_to_end(key)
+
+
 class LocalVoiceCloner:
     def __init__(
         self,
@@ -276,6 +326,7 @@ class LocalVoiceCloner:
         self._tts_model: Any | None = None
         self._stt_model: Any | None = None
         self._model_lock = threading.Lock()
+        self._reference_cache = _ReferenceCache()
 
     @property
     def model_loaded(self) -> bool:
@@ -341,19 +392,32 @@ class LocalVoiceCloner:
         )
         return normalize_audio(audio_np), ref_sr
 
+    def _canonical_reference(self, reference_audio_path: str | Path) -> tuple[str, _CachedReference]:
+        """Canonicalized reference audio, memoized by content hash."""
+        digest = reference_content_hash(reference_audio_path)
+        cached = self._reference_cache.get(digest, self.sample_rate)
+        if cached is None:
+            audio_np, ref_sr = self._load_reference(reference_audio_path)
+            if len(audio_np) == 0:
+                raise ValueError("Reference audio is empty.")
+            cached = self._reference_cache.put(digest, ref_sr, audio_np)
+        return digest, cached
+
     def transcribe(self, reference_audio_path: str | Path) -> str:
-        audio_np, ref_sr = self._load_reference(reference_audio_path)
-        if len(audio_np) == 0:
-            raise ValueError("Reference audio is empty.")
+        digest, cached = self._canonical_reference(reference_audio_path)
+        if cached.transcript:
+            return cached.transcript
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             canonical_ref_path = Path(tmp.name)
 
         try:
-            sf.write(str(canonical_ref_path), audio_np, ref_sr, subtype="PCM_16")
-            return self._transcribe_canonical(canonical_ref_path)
+            sf.write(str(canonical_ref_path), cached.audio, cached.sample_rate, subtype="PCM_16")
+            transcript = self._transcribe_canonical(canonical_ref_path)
         finally:
             canonical_ref_path.unlink(missing_ok=True)
+        self._reference_cache.set_transcript(digest, transcript)
+        return transcript
 
     def clone_voice(
         self,
@@ -375,23 +439,22 @@ class LocalVoiceCloner:
 
         notify = progress_callback or (lambda _stage: None)
         notify("prepare")
-        audio_np, ref_sr = self._load_reference(reference_audio_path)
-        if len(audio_np) == 0:
-            raise ValueError("Reference audio is empty.")
+        digest, cached = self._canonical_reference(reference_audio_path)
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             canonical_ref_path = Path(tmp.name)
 
         try:
-            sf.write(str(canonical_ref_path), audio_np, ref_sr, subtype="PCM_16")
+            sf.write(str(canonical_ref_path), cached.audio, cached.sample_rate, subtype="PCM_16")
             notify("load")
             tts_model = self._ensure_tts_model()
 
             transcript = reference_text.strip()
             if not transcript:
-                transcript = sidecar_transcript(reference_audio_path) or ""
+                transcript = sidecar_transcript(reference_audio_path) or cached.transcript or ""
             if not transcript and self.engine != "chatterbox":
                 transcript = self._transcribe_canonical(canonical_ref_path)
+            self._reference_cache.set_transcript(digest, transcript)
 
             notify("voice")
             sample_rate = self.sample_rate

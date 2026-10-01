@@ -315,6 +315,70 @@ def test_clone_voice_prefers_explicit_reference_text_over_sidecar(sample_voice_f
     assert stt_model.calls == []
 
 
+def test_reference_cache_skips_reload_and_retranscription(sample_voice_file, monkeypatch):
+    tts_model = FakeTTSModel()
+    stt_model = FakeSTTModel("Cached words.")
+    cloner = cloner_module.LocalVoiceCloner(
+        tts_loader=lambda _model_id: tts_model,
+        stt_loader=lambda _model_id: stt_model,
+    )
+    loads: list[str] = []
+    original_load = cloner._load_reference
+
+    def counting_load(path):
+        loads.append(str(path))
+        return original_load(path)
+
+    monkeypatch.setattr(cloner, "_load_reference", counting_load)
+
+    cloner.clone_voice(sample_voice_file, text="One")
+    cloner.clone_voice(sample_voice_file, text="Two")
+
+    assert len(loads) == 1
+    assert len(stt_model.calls) == 1
+    assert [call["text"] for call in tts_model.calls] == ["One.", "Two."]
+    assert [call["ref_text"] for call in tts_model.calls] == ["Cached words.", "Cached words."]
+
+
+def test_reference_cache_reuses_transcribe_result(sample_voice_file):
+    tts_model = FakeTTSModel()
+    stt_model = FakeSTTModel("Shared words.")
+    cloner = cloner_module.LocalVoiceCloner(
+        tts_loader=lambda _model_id: tts_model,
+        stt_loader=lambda _model_id: stt_model,
+    )
+
+    assert cloner.transcribe(sample_voice_file) == "Shared words."
+    cloner.clone_voice(sample_voice_file, text="Hello")
+
+    assert len(stt_model.calls) == 1
+    assert tts_model.calls[0]["ref_text"] == "Shared words."
+
+
+def test_reference_cache_evicts_beyond_four_entries(tmp_path):
+    tts_model = FakeTTSModel()
+    stt_model = FakeSTTModel()
+    cloner = cloner_module.LocalVoiceCloner(
+        tts_loader=lambda _model_id: tts_model,
+        stt_loader=lambda _model_id: stt_model,
+    )
+    refs = []
+    for index in range(5):
+        path = tmp_path / f"ref{index}.wav"
+        sf.write(str(path), np.full(24000, 0.1 * (index + 1), dtype=np.float32), 24000)
+        refs.append(path)
+
+    for path in refs:
+        cloner.clone_voice(path, text="Hello")
+
+    assert len(cloner._reference_cache) == cloner_module.REFERENCE_CACHE_SIZE == 4
+    assert len(stt_model.calls) == 5
+
+    cloner.clone_voice(refs[0], text="Hello")
+
+    assert len(stt_model.calls) == 6
+
+
 def test_warmup_loads_models_and_reports_timing():
     loaded: list[str] = []
     cloner = cloner_module.LocalVoiceCloner(
