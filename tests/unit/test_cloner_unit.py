@@ -474,7 +474,19 @@ def test_clone_voice_spells_out_numbers_for_english(sample_voice_file):
     ]
 
 
-def test_qwen_cloning_uses_configured_repetition_penalty(sample_voice_file):
+def test_qwen_cloning_uses_configured_repetition_penalty(sample_voice_file, monkeypatch):
+    import sys
+
+    def load_reference_audio(path, sample_rate):
+        audio, actual_sample_rate = sf.read(path, dtype="float32")
+        assert actual_sample_rate == sample_rate
+        return audio
+
+    # Keep the fake model independent of MLX's native runtime on Linux CI.
+    monkeypatch.setitem(
+        sys.modules, "mlx_audio.utils", SimpleNamespace(load_audio=load_reference_audio)
+    )
+
     class ICLModel(FakeTTSModel):
         speech_tokenizer = SimpleNamespace(has_encoder=True)
 
