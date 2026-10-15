@@ -2,6 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import soundfile as sf
 
 import app as app_module
@@ -835,3 +836,42 @@ def test_only_saved_audio_uses_voice_metadata(tmp_path, monkeypatch):
     resolve = getattr(app_module, "saved_reference_name", lambda ref: Path(ref[1]).stem)
     assert resolve((str(saved), "alice.wav")) == "alice"
     assert resolve((str(upload), "alice.wav")) is None
+
+
+def test_estimate_generation_seconds_single_take():
+    low, high = app_module.estimate_generation_seconds(10.0, "qwen", "high", 1)
+    assert low == high == pytest.approx(15.0)
+
+
+def test_estimate_generation_seconds_more_takes_widens_range():
+    low, high = app_module.estimate_generation_seconds(10.0, "qwen", "high", 3)
+    assert low == pytest.approx(16.5)
+    assert high == pytest.approx(49.5)
+
+
+def test_format_generation_estimate():
+    assert app_module.format_generation_estimate(15.0, 15.0) == "about 15s to create"
+    assert app_module.format_generation_estimate(16.5, 49.5) == "about 15s–50s to create"
+    assert app_module.format_generation_estimate(1.0, 1.0) == "about 5s to create"
+    assert app_module.format_generation_estimate(150.0, 400.0) == "about 2 min–7 min to create"
+
+
+def test_reference_speech_used_seconds(tmp_path):
+    sr = 24000
+    t = np.arange(sr * 20) / sr
+    long_path = tmp_path / "long.wav"
+    sf.write(str(long_path), (0.3 * np.sin(2 * np.pi * 200 * t)).astype(np.float32), sr)
+    used, truncated = app_module.reference_speech_used_seconds(long_path)
+    assert truncated is True
+    assert used <= app_module.MAX_REFERENCE_SECONDS
+
+    short_path = tmp_path / "short.wav"
+    sf.write(str(short_path), (0.3 * np.sin(2 * np.pi * 200 * t[: sr * 4])).astype(np.float32), sr)
+    assert app_module.reference_speech_used_seconds(short_path)[1] is False
+
+
+def test_ui_includes_pause_button_and_takes_help():
+    rendered = str(app_module.app_ui)
+    assert "Insert pause" in rendered
+    assert "takes_per_line" in rendered
+    assert "More takes are slower but catch skipped words." in rendered

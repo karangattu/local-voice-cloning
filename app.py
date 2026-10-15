@@ -64,11 +64,18 @@ from src.audio_utils import (
     analyze_reference_audio,
     apply_fades,
     load_audio,
+    prepare_reference_audio,
     save_audio,
     slice_audio,
     trim_silence,
 )
-from src.cloner import ENGINE_NAME, ENGINES, get_shared_cloner, unload_shared_cloners
+from src.cloner import (
+    ENGINE_NAME,
+    ENGINES,
+    MAX_REFERENCE_SECONDS,
+    get_shared_cloner,
+    unload_shared_cloners,
+)
 from src.progress import progress_snapshot, run_with_progress
 
 VOICE_SAMPLES_DIR = Path(__file__).parent / "voice_samples"
@@ -424,6 +431,24 @@ app_ui = ui.page_fluid(
                     });
                 };
 
+                window.sonaInsertPause = function() {
+                    const area = document.getElementById('speech_text');
+                    if (!area) return;
+                    const start = area.selectionStart ?? area.value.length;
+                    const end = area.selectionEnd ?? start;
+                    const before = area.value.slice(0, start);
+                    const after = area.value.slice(end);
+                    const tag = (before && !/\\s$/.test(before) ? ' ' : '') + '[pause 0.5s]'
+                        + (/^\\s/.test(after) ? '' : ' ');
+                    area.value = before + tag + after;
+                    area.focus();
+                    area.setSelectionRange(start + tag.length, start + tag.length);
+                    area.dispatchEvent(new Event('input', { bubbles: true }));
+                    if (typeof Shiny !== 'undefined') {
+                        Shiny.setInputValue('speech_text', area.value);
+                    }
+                };
+
                 window.sonaUseAsScript = function() {
                     const text = document.getElementById('ref_transcript')?.value || '';
                     if (!text) return;
@@ -530,7 +555,11 @@ app_ui = ui.page_fluid(
                     ui.span({"class": "eq-bar"}),
                     ui.span({"class": "eq-bar"}),
                 ),
-                ui.span({"class": "brand-text"}, "Sona — Local Voice Studio"),
+                ui.span(
+                    {"class": "brand-text"},
+                    "Sona",
+                    ui.span(" — Local Voice Studio", class_="brand-subtitle"),
+                ),
             ),
             ui.div(
                 {"class": "privacy-note"},
@@ -543,9 +572,10 @@ app_ui = ui.page_fluid(
                 ui.output_ui("engine_badge"),
                 ui.input_action_button(
                     "btn_unload_models",
-                    ui.TagList(icon_svg("trash-can"), " Free RAM"),
+                    ui.TagList(icon_svg("memory"), " Free RAM"),
                     class_="btn btn-sm btn-outline-secondary btn-memory-unload",
                     title="Unload models from unified memory / GPU cache",
+                    aria_label="Free RAM: unload models from memory",
                 ),
             ),
         ),
@@ -778,6 +808,13 @@ app_ui = ui.page_fluid(
                                     choices=SCRIPT_PRESETS,
                                     selected="custom",
                                 ),
+                                ui.tags.button(
+                                    ui.TagList(icon_svg("pause"), " Insert pause"),
+                                    type="button",
+                                    class_="btn-insert-pause",
+                                    onclick="sonaInsertPause()",
+                                    title="Insert a half-second pause at the cursor",
+                                ),
                             ),
                         ),
                         ui.input_text_area(
@@ -814,25 +851,6 @@ app_ui = ui.page_fluid(
                                     inline=True,
                                 ),
                             ),
-                            ui.input_slider(
-                                "synthesis_speed",
-                                "Speaking pace",
-                                min=0.6,
-                                max=1.5,
-                                value=1.0,
-                                step=0.05,
-                            ),
-                            ui.div(
-                                {
-                                    "title": "Create more than one take of each line and keep the take whose transcript best matches the script. Each extra take adds about one generation of time.",
-                                },
-                                ui.input_select(
-                                    "takes_per_line",
-                                    "Takes per line",
-                                    choices={"1": "1 (fastest)", "2": "2", "3": "3 (most reliable)"},
-                                    selected="1",
-                                ),
-                            ),
                             ui.panel_conditional(
                                 "input.engine === 'qwen'",
                                 ui.input_select(
@@ -861,6 +879,30 @@ app_ui = ui.page_fluid(
                                     "Output language",
                                     value="auto",
                                     placeholder="auto, Hindi, ar, …",
+                                ),
+                            ),
+                            ui.div(
+                                {"class": "pace-control"},
+                                ui.input_slider(
+                                    "synthesis_speed",
+                                    "Speaking pace",
+                                    min=0.6,
+                                    max=1.5,
+                                    value=1.0,
+                                    step=0.05,
+                                ),
+                            ),
+                            ui.div(
+                                {"class": "takes-control"},
+                                ui.input_select(
+                                    "takes_per_line",
+                                    "Takes per line",
+                                    choices={"1": "1 (fastest)", "2": "2", "3": "3 (most reliable)"},
+                                    selected="1",
+                                ),
+                                ui.p(
+                                    "More takes are slower but catch skipped words.",
+                                    class_="field-help",
                                 ),
                             ),
                         ),
@@ -936,6 +978,58 @@ app_ui = ui.page_fluid(
 def estimate_speech_duration_seconds(text: str) -> float:
     words = len(text.strip().split()) if text.strip() else 0
     return words / 2.4
+
+
+# Seconds of work per second of audio on an M-series Mac, measured with warm models.
+GENERATION_SECONDS_PER_AUDIO_SECOND = {
+    ("qwen", "high"): 1.5,
+    ("qwen", "fast"): 1.0,
+    ("omnivoice", "high"): 1.0,
+    ("omnivoice", "fast"): 0.6,
+    ("chatterbox", "high"): 1.5,
+    ("chatterbox", "fast"): 0.8,
+}
+# Whisper checks each take when there is more than one take per line.
+TAKE_CHECK_SECONDS_PER_AUDIO_SECOND = 0.15
+
+
+def estimate_generation_seconds(
+    audio_seconds: float, engine: str, quality: str, takes: int = 1
+) -> tuple[float, float]:
+    """Likely and worst-case time to create audio, without model download or load.
+
+    With more than one take, generation stops early when a take matches the
+    script exactly, so the likely time is one take plus the check."""
+    rate = GENERATION_SECONDS_PER_AUDIO_SECOND.get((engine, quality), 1.5)
+    one_take = audio_seconds * rate
+    if takes <= 1:
+        return one_take, one_take
+    check = audio_seconds * TAKE_CHECK_SECONDS_PER_AUDIO_SECOND
+    return one_take + check, takes * (one_take + check)
+
+
+def format_generation_estimate(low: float, high: float) -> str:
+    def nice(seconds: float) -> str:
+        if seconds < 90:
+            return f"{max(5, round(seconds / 5) * 5):.0f}s"
+        return f"{seconds / 60:.0f} min"
+
+    if nice(low) == nice(high):
+        return f"about {nice(low)} to create"
+    return f"about {nice(low)}–{nice(high)} to create"
+
+
+def reference_speech_used_seconds(path: str | Path) -> tuple[float, bool]:
+    """Seconds of the clip the cloner uses, and whether it had to cut the clip."""
+    tensor_audio, sr = load_audio(path, max_duration_seconds=120.0)
+    audio, truncated = prepare_reference_audio(
+        tensor_audio.squeeze().numpy(),
+        sr,
+        max_duration_seconds=MAX_REFERENCE_SECONDS,
+        tail_silence_seconds=0.0,
+        return_truncated=True,
+    )
+    return len(audio) / sr, truncated
 
 
 def _guess_mime_type(filename: str) -> str:
@@ -1424,7 +1518,15 @@ def server(input, output, session):
     @render.text
     def speech_duration():
         seconds = estimate_speech_duration_seconds(input.speech_text() or "")
-        return f"~{seconds:.0f}s estimated audio" if seconds else "Add a script to begin"
+        if not seconds:
+            return "Add a script to begin"
+        low, high = estimate_generation_seconds(
+            seconds,
+            input.engine() or "qwen",
+            input.quality() or "high",
+            int(input.takes_per_line() or 1),
+        )
+        return f"~{seconds:.0f}s of audio · {format_generation_estimate(low, high)}"
 
     @render.text
     def character_count():
@@ -1496,6 +1598,7 @@ def server(input, output, session):
                 download="",
                 class_="btn btn-outline-secondary btn-sm btn-export-voice",
                 title="Export selected voice (.wav)",
+                aria_label="Export selected voice (.wav)",
             ),
             ui.tags.a(
                 icon_svg("file-zipper"),
@@ -1503,24 +1606,28 @@ def server(input, output, session):
                 download="saved_voices.zip",
                 class_="btn btn-outline-secondary btn-sm btn-export-all-voices",
                 title="Export all voices (.zip)",
+                aria_label="Export all voices (.zip)",
             ),
             ui.input_action_button(
                 "btn_refresh_voices",
                 icon_svg("rotate-right"),
                 class_="btn btn-outline-secondary btn-sm btn-refresh-voices",
                 title="Rescan directory",
+                aria_label="Rescan directory",
             ),
             ui.input_action_button(
                 "btn_rename_voice",
                 icon_svg("pen-to-square"),
                 class_="btn btn-outline-secondary btn-sm btn-rename-voice",
                 title="Rename selected voice",
+                aria_label="Rename selected voice",
             ),
             ui.input_action_button(
                 "btn_delete_voice",
                 icon_svg("trash"),
                 class_="btn btn-outline-danger btn-sm btn-delete-voice",
                 title="Delete selected voice",
+                aria_label="Delete selected voice",
             ),
         )
 
@@ -1790,13 +1897,31 @@ def server(input, output, session):
                 ui.span({"class": "quality-pill good"}, icon_svg("scissors"), "Trim active")
             )
         if report is not None:
-            if not report["warnings"]:
+            warnings = report["warnings"]
+            if report["duration_seconds"] > MAX_REFERENCE_SECONDS and not trimmed_reference_path():
+                # Long clips are expected: the cloner cuts them at a pause. Say what
+                # it uses instead of warning.
+                warnings = [w for w in warnings if not w.startswith("The sample is longer")]
+            if not warnings:
                 quality_pills.append(
                     ui.span(
                         {"class": "quality-pill good"}, icon_svg("circle-check"), "Clean levels"
                     )
                 )
-            for w in report["warnings"]:
+            if len(warnings) < len(report["warnings"]):
+                try:
+                    used_seconds, truncated = reference_speech_used_seconds(datapath)
+                except (ValueError, OSError, RuntimeError):
+                    truncated = False
+                if truncated:
+                    quality_pills.append(
+                        ui.span(
+                            {"class": "quality-pill info"},
+                            icon_svg("scissors"),
+                            f"Uses {used_seconds:.1f}s of speech, cut at a pause",
+                        )
+                    )
+            for w in warnings:
                 quality_pills.append(
                     ui.span({"class": "quality-pill warn"}, icon_svg("triangle-exclamation"), w)
                 )
@@ -1921,15 +2046,13 @@ def server(input, output, session):
             action_buttons = []
 
         return ui.tags.details(
-            {"class": "transcript-card", "open": status == "error"},
-            ui.tags.summary("Review reference transcript"),
+            {"class": "transcript-card", "open": True},
+            ui.tags.summary(
+                ui.span("Reference transcript", class_="transcript-summary-title"),
+                status_badge,
+            ),
             ui.div(
                 {"class": "transcript-card-header"},
-                ui.div(
-                    {"class": "transcript-title"},
-                    icon_svg("file-lines"),
-                    "Reference transcript",
-                ),
                 ui.div(
                     {"class": "transcript-actions"},
                     *action_buttons,
@@ -1950,7 +2073,6 @@ def server(input, output, session):
             else None,
             ui.div(
                 {"class": "transcript-footer"},
-                status_badge,
                 ui.span("Passes to voice cloner", class_="transcript-status"),
             ),
         )
