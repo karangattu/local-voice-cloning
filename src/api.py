@@ -119,7 +119,7 @@ def health():
         "model_loaded": is_shared_cloner_loaded(),
         "version": {"package": PACKAGE_VERSION, "git": GIT_VERSION},
         "capabilities": {
-            "speed_control": "post-stretch (librosa) for qwen/chatterbox, native for omnivoice",
+            "speed_control": "post-stretch (WSOLA) for qwen/chatterbox, native for omnivoice",
             "transcribe": transcribe_backend_available(),
             "sidecar_transcripts": True,
         },

@@ -157,6 +157,62 @@ def apply_fades(audio: np.ndarray, sample_rate: int, fade_seconds: float = 0.015
     return audio
 
 
+def time_stretch(
+    audio: np.ndarray,
+    sample_rate: int,
+    rate: float,
+    frame_seconds: float = 0.03,
+    tolerance_seconds: float = 0.01,
+) -> np.ndarray:
+    """Change speaking pace without changing pitch (WSOLA).
+
+    rate > 1 is faster. Each output frame is copied from the input position,
+    within a small tolerance, whose waveform best continues the previous frame.
+    Unlike a phase vocoder, this keeps the waveform intact, so speech does not
+    sound phasey or metallic."""
+    if rate == 1.0 or len(audio) == 0:
+        return audio.astype(np.float32)
+    n = 2 * max(1, int(sample_rate * frame_seconds) // 2)
+    hop_out = n // 2
+    hop_in = hop_out * rate
+    tol = max(1, int(sample_rate * tolerance_seconds))
+    window = signal.windows.hann(n, sym=False).astype(np.float32)
+    padded = np.pad(audio.astype(np.float32), (tol, 2 * n + 2 * tol + int(hop_in)))
+    out_len = round(len(audio) / rate)
+    n_frames = out_len // hop_out + 1
+    out = np.zeros(n_frames * hop_out + n, dtype=np.float32)
+    norm = np.zeros_like(out)
+    prev = 0
+    for k in range(n_frames):
+        nominal = round(k * hop_in)
+        if nominal >= len(audio):
+            break
+        pos = nominal
+        if k:
+            target = padded[prev + tol + hop_out : prev + tol + hop_out + n]
+            region = padded[nominal : nominal + n + 2 * tol]
+            pos = nominal + int(np.argmax(np.correlate(region, target, "valid"))) - tol
+        out[k * hop_out : k * hop_out + n] += padded[pos + tol : pos + tol + n] * window
+        norm[k * hop_out : k * hop_out + n] += window
+        prev = pos
+    out = out[:out_len] / np.maximum(norm[:out_len], 1e-3)
+    return out.astype(np.float32)
+
+
+def _crossfade_concat(chunks: list[np.ndarray], n_fade: int) -> np.ndarray:
+    """Join chunks with an equal-power crossfade, so splices do not click."""
+    result = chunks[0]
+    for chunk in chunks[1:]:
+        fade = min(n_fade, len(result), len(chunk))
+        if fade == 0:
+            result = np.concatenate([result, chunk])
+            continue
+        ramp = np.sin(np.linspace(0.0, np.pi / 2, fade, dtype=np.float32))
+        overlap = result[-fade:] * ramp[::-1] + chunk[:fade] * ramp
+        result = np.concatenate([result[:-fade], overlap, chunk[fade:]])
+    return result
+
+
 def prepare_reference_audio(
     audio: np.ndarray,
     sample_rate: int,
@@ -205,7 +261,6 @@ def prepare_reference_audio(
 
     kept = np.flatnonzero(keep)
     kept_active = active[kept]
-    audio = frames[kept].reshape(-1)
 
     max_frames = int(max_duration_seconds / 0.02)
     if len(kept) > max_frames:
@@ -215,9 +270,13 @@ def prepare_reference_audio(
             cut = window_start + int(pauses[-1])
         else:
             cut = window_start + int(np.argmin(frame_db[kept][window_start:max_frames]))
-        audio = audio[: (cut + 1) * frame]
+        kept = kept[: cut + 1]
 
-    audio = audio.astype(np.float32).copy()
+    # Crossfade where a long pause was shortened. A hard splice clicks, and the
+    # model copies clicks from the reference into the generated speech.
+    runs = np.split(kept, np.flatnonzero(np.diff(kept) > 1) + 1)
+    chunks = [frames[run].reshape(-1) for run in runs]
+    audio = _crossfade_concat(chunks, int(sample_rate * 0.01)).astype(np.float32).copy()
     n_fade = min(int(sample_rate * 0.02), len(audio) // 2)
     audio[:n_fade] *= np.linspace(0.0, 1.0, n_fade, dtype=np.float32)
     # End on room tone, not digital silence, so the model keeps the background noise.
@@ -337,15 +396,21 @@ def reduce_background_noise(
 
 
 def enhance_audio(
-    audio: np.ndarray, sample_rate: int, target_level_db: float = -16.0
+    audio: np.ndarray,
+    sample_rate: int,
+    target_level_db: float = -16.0,
+    noise_reduction_db: float = 7.0,
 ) -> np.ndarray:
     """Post-processing chain for synthesized speech: rumble removal, background
     hiss reduction, edge silence trimming, click-free fades, and peak-safe
-    loudness normalization."""
+    loudness normalization.
+
+    The hiss reduction is gentle on purpose. A deeper cut also removes breaths
+    and the soft ends of words, and the speech then sounds synthetic."""
     if len(audio) == 0:
         return audio.astype(np.float32)
     audio = high_pass_filter(audio, sample_rate)
-    audio = reduce_background_noise(audio, sample_rate)
+    audio = reduce_background_noise(audio, sample_rate, reduction_db=noise_reduction_db)
     audio = trim_silence(audio, sample_rate)
     audio = apply_fades(audio, sample_rate)
     return normalize_audio(audio, target_level_db=target_level_db)

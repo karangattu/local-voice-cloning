@@ -185,7 +185,7 @@ def test_health_reports_version_and_capabilities():
     assert body["version"]["git"]
     capabilities = body["capabilities"]
     assert capabilities["speed_control"] == (
-        "post-stretch (librosa) for qwen/chatterbox, native for omnivoice"
+        "post-stretch (WSOLA) for qwen/chatterbox, native for omnivoice"
     )
     assert isinstance(capabilities["transcribe"], bool)
     assert capabilities["sidecar_transcripts"] is True

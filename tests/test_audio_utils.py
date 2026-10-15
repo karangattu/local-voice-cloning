@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 import torch
+from scipy.ndimage import maximum_filter1d
 
 from src.audio_utils import (
     analyze_reference_audio,
@@ -19,6 +20,7 @@ from src.audio_utils import (
     resample_audio,
     save_audio,
     slice_audio,
+    time_stretch,
     trim_silence,
 )
 
@@ -314,3 +316,50 @@ def test_slice_audio_clamped_end(tmp_path):
 def test_slice_audio_missing_file(tmp_path):
     with pytest.raises(FileNotFoundError):
         slice_audio(tmp_path / "missing.wav", 0.0, 1.0)
+
+
+@pytest.mark.parametrize("rate", [0.8, 1.25])
+def test_time_stretch_changes_duration_keeps_pitch_and_waveform(rate):
+    sr = 24000
+    tone = _make_tone(sr, 1.0, 220.0)
+    stretched = time_stretch(tone, sr, rate)
+    assert len(stretched) == round(sr / rate)
+    spectrum = np.abs(np.fft.rfft(stretched))
+    assert np.argmax(spectrum) * sr / len(stretched) == pytest.approx(220, abs=2)
+    # WSOLA aligns frames, so the sine stays continuous; no phasey jumps.
+    max_slope = 0.5 * 2 * np.pi * 220 / sr
+    interior = stretched[sr // 20 : -sr // 20]
+    assert np.max(np.abs(np.diff(interior))) < 1.2 * max_slope
+
+
+def test_time_stretch_rate_one_is_identity():
+    tone = _make_tone(24000, 0.2)
+    np.testing.assert_array_equal(time_stretch(tone, 24000, 1.0), tone)
+
+
+def test_prepare_reference_crossfades_shortened_pauses():
+    sr = 24000
+    hum = 0.003 * np.sin(2 * np.pi * 60 * np.arange(3 * sr) / sr).astype(np.float32)
+    tone = _make_tone(sr, 1.0, 100.0)
+    audio = np.concatenate([tone, hum[: int(1.37 * sr)], tone, hum[: int(1.61 * sr)], tone])
+    prepared = prepare_reference_audio(audio, sr, tail_silence_seconds=0.0)
+    assert len(prepared) < len(audio) - 2 * sr
+    quiet = maximum_filter1d(np.abs(prepared), size=int(0.02 * sr)) < 0.01
+    jumps = np.abs(np.diff(prepared))[quiet[1:] & quiet[:-1]]
+    # A hard splice of the hum jumps by up to 0.006; its own slope is under 1e-4.
+    assert np.max(jumps) < 1e-3
+
+
+def test_enhance_audio_keeps_breath_level_sounds():
+    sr = 24000
+    rng = np.random.default_rng(3)
+    breath = (0.01 * rng.standard_normal(sr)).astype(np.float32)
+    audio = np.concatenate([_make_tone(sr), breath, _make_tone(sr)])
+    enhanced = enhance_audio(audio, sr)
+
+    def ratio(signal):
+        mid = signal[len(signal) // 2 - sr // 4 : len(signal) // 2 + sr // 4]
+        return np.sqrt(np.mean(mid**2)) / np.sqrt(np.mean(signal[: sr // 2] ** 2))
+
+    # The pause between words loses no more than about 7 dB.
+    assert ratio(enhanced) / ratio(audio) > 10 ** (-8 / 20)

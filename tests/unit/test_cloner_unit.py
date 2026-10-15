@@ -408,3 +408,44 @@ def test_warmup_wraps_download_errors():
     message = str(excinfo.value)
     assert cloner_module.MODEL_VARIANTS["high"] in message
     assert "check network/HF access and rerun warmup" in message
+
+
+class NoiseTTSModel(FakeTTSModel):
+    """Returns one random draw per call, so tests can see the sampler state."""
+
+    def generate(self, **kwargs):
+        self.calls.append(kwargs)
+        draw = float(np.random.rand())
+        self.draws = [*getattr(self, "draws", []), draw]
+        yield SimpleNamespace(
+            audio=np.full(self.sample_rate // 10, 0.2, dtype=np.float32),
+            sample_rate=self.sample_rate,
+        )
+
+
+def test_clone_voice_reseeds_each_line_with_one_job_seed(sample_voice_file, monkeypatch):
+    seeds: list[int] = []
+    real_seed = cloner_module.seed_generators
+    monkeypatch.setattr(
+        cloner_module, "seed_generators", lambda value: (seeds.append(value), real_seed(value))
+    )
+    model = NoiseTTSModel()
+    cloner = cloner_module.LocalVoiceCloner(tts_loader=lambda _: model)
+
+    cloner.clone_voice(sample_voice_file, "One.\nTwo.\nThree.", reference_text="Hi")
+
+    assert len(seeds) == 3 and len(set(seeds)) == 1
+    assert len(set(model.draws)) == 1
+
+
+def test_clone_voice_explicit_seed_is_reproducible_and_default_varies(sample_voice_file):
+    model = NoiseTTSModel()
+    cloner = cloner_module.LocalVoiceCloner(tts_loader=lambda _: model)
+
+    for _ in range(2):
+        cloner.clone_voice(sample_voice_file, "Hello", reference_text="Hi", seed=7)
+    for _ in range(2):
+        cloner.clone_voice(sample_voice_file, "Hello", reference_text="Hi")
+
+    assert model.draws[0] == model.draws[1]
+    assert model.draws[2] != model.draws[3]

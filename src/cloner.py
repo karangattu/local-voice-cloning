@@ -22,6 +22,7 @@ from src.audio_utils import (
     load_audio,
     normalize_audio,
     prepare_reference_audio,
+    time_stretch,
     trim_silence,
 )
 
@@ -237,6 +238,23 @@ def _script_segments(text: str) -> list[tuple[str, float]]:
     return segments
 
 
+def seed_generators(seed: int) -> None:
+    """Seed every sampler the engines draw from (NumPy, MLX, PyTorch)."""
+    np.random.seed(seed)
+    try:
+        import mlx.core as mx
+
+        mx.random.seed(seed)
+    except ImportError:
+        pass
+    try:
+        import torch
+
+        torch.manual_seed(seed)
+    except ImportError:
+        pass
+
+
 def model_id_for_quality(quality: str) -> str:
     try:
         return MODEL_VARIANTS[quality]
@@ -427,6 +445,7 @@ class LocalVoiceCloner:
         speed: float = 1.0,
         language: str = "auto",
         progress_callback: ProgressCallback | None = None,
+        seed: int | None = None,
         **_legacy_options,
     ) -> SynthesisResult:
         if not text.strip():
@@ -459,7 +478,11 @@ class LocalVoiceCloner:
             notify("voice")
             sample_rate = self.sample_rate
             pieces: list[tuple[np.ndarray, float]] = []
+            # One seed per job, reapplied before each line, so every line draws the
+            # same sampling noise and pitch and pace do not drift between lines.
+            job_seed = seed if seed is not None else int.from_bytes(os.urandom(4), "little")
             for segment, segment_pause in _script_segments(text):
+                seed_generators(job_seed)
                 if self.engine == "chatterbox":
                     wav = tts_model.generate(
                         segment,
@@ -513,9 +536,7 @@ class LocalVoiceCloner:
                         piece, sample_rate, threshold_db=-70.0, padding_seconds=0.0
                     )
                     if self.engine != "omnivoice" and speed != 1.0 and len(piece):
-                        from librosa.effects import time_stretch
-
-                        piece = time_stretch(piece, rate=speed)
+                        piece = time_stretch(piece, sample_rate, rate=speed)
                     pieces.append((piece, pause))
             generated = join_with_room_tone(pieces, sample_rate)
 
