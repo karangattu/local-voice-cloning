@@ -822,6 +822,17 @@ app_ui = ui.page_fluid(
                                 value=1.0,
                                 step=0.05,
                             ),
+                            ui.div(
+                                {
+                                    "title": "Create more than one take of each line and keep the take whose transcript best matches the script. Each extra take adds about one generation of time.",
+                                },
+                                ui.input_select(
+                                    "takes_per_line",
+                                    "Takes per line",
+                                    choices={"1": "1 (fastest)", "2": "2", "3": "3 (most reliable)"},
+                                    selected="1",
+                                ),
+                            ),
                             ui.panel_conditional(
                                 "input.engine === 'qwen'",
                                 ui.input_select(
@@ -1953,6 +1964,7 @@ def server(input, output, session):
         language: str,
         engine: str,
         speed: float = 1.0,
+        candidates: int = 1,
     ):
         def work(report):
             result = get_shared_cloner(quality, engine=engine).clone_voice(
@@ -1961,6 +1973,7 @@ def server(input, output, session):
                 reference_text=ref_text,
                 speed=speed,
                 language=language,
+                candidates=candidates,
                 progress_callback=report,
             )
             report("finish")
@@ -2010,6 +2023,7 @@ def server(input, output, session):
             or "auto",
             input.engine() or "qwen",
             speed,
+            int(input.takes_per_line() or 1),
         )
 
     @reactive.effect

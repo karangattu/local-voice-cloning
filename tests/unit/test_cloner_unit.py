@@ -449,3 +449,148 @@ def test_clone_voice_explicit_seed_is_reproducible_and_default_varies(sample_voi
 
     assert model.draws[0] == model.draws[1]
     assert model.draws[2] != model.draws[3]
+
+
+def test_script_segments_pause_follows_line_punctuation():
+    segments = cloner_module._script_segments("Wait,\nthen go.\nWell...\nOkay.\n\nNext.")
+    assert [pause for _, pause in segments] == [0.0, 0.2, 0.4, 0.6, 0.8]
+
+
+def test_clone_voice_spells_out_numbers_for_english(sample_voice_file):
+    model = FakeTTSModel()
+    cloner = cloner_module.LocalVoiceCloner(tts_loader=lambda _: model)
+
+    cloner.clone_voice(sample_voice_file, "It costs $5 [pause 0.5s] at 3:30", reference_text="Hi")
+    cloner.clone_voice(
+        sample_voice_file, "Il coûte 5 euros", reference_text="Hi", language="French"
+    )
+    cloner.clone_voice(sample_voice_file, "It costs $5", reference_text="Hi", normalize_text=False)
+
+    assert [call["text"] for call in model.calls] == [
+        "It costs five dollars.",
+        "at three thirty.",
+        "Il coûte 5 euros.",
+        "It costs $5.",
+    ]
+
+
+def test_qwen_cloning_uses_configured_repetition_penalty(sample_voice_file):
+    class ICLModel(FakeTTSModel):
+        speech_tokenizer = SimpleNamespace(has_encoder=True)
+
+        def _generate_icl(self, **kwargs):
+            self.calls.append(kwargs)
+            return self.generate_audio()
+
+        def generate_audio(self):
+            yield SimpleNamespace(audio=np.zeros(2400, dtype=np.float32), sample_rate=24000)
+
+    icl_model = ICLModel()
+    cloner = cloner_module.LocalVoiceCloner(tts_loader=lambda _: icl_model)
+    cloner.clone_voice(sample_voice_file, "Hello", reference_text="Hi")
+    assert icl_model.calls[0]["repetition_penalty"] == cloner_module.QWEN_REPETITION_PENALTY
+    assert icl_model.calls[0]["ref_text"] == "Hi"
+    assert icl_model.calls[0]["ref_audio"].ndim == 1
+
+    plain_model = FakeTTSModel()
+    cloner = cloner_module.LocalVoiceCloner(tts_loader=lambda _: plain_model)
+    cloner.clone_voice(sample_voice_file, "Hello", reference_text="Hi", repetition_penalty=1.3)
+    assert plain_model.calls[0]["repetition_penalty"] == 1.3
+
+
+class TakeTTSModel(FakeTTSModel):
+    """Each call returns a take filled with its own call number."""
+
+    def generate(self, **kwargs):
+        self.calls.append(kwargs)
+        take = len(self.calls)
+        yield SimpleNamespace(
+            audio=np.full(2400, 0.01 * take, dtype=np.float32), sample_rate=self.sample_rate
+        )
+
+
+class SequenceSTTModel:
+    def __init__(self, transcripts):
+        self.transcripts = list(transcripts)
+
+    def generate(self, audio_path, **kwargs):
+        return SimpleNamespace(text=self.transcripts.pop(0))
+
+
+def _capture_pieces(monkeypatch):
+    captured = []
+    monkeypatch.setattr(
+        cloner_module,
+        "join_with_room_tone",
+        lambda pieces, _sr: captured.extend(pieces) or np.concatenate([p for p, _ in pieces]),
+    )
+    return captured
+
+
+def test_best_of_n_keeps_take_whose_transcript_matches(sample_voice_file, monkeypatch):
+    pieces = _capture_pieces(monkeypatch)
+    model = TakeTTSModel()
+    stt = SequenceSTTModel(["Hello their friend", "Hello there.", "Hello."])
+    cloner = cloner_module.LocalVoiceCloner(tts_loader=lambda _: model, stt_loader=lambda _: stt)
+
+    cloner.clone_voice(sample_voice_file, "Hello there", reference_text="Hi", candidates=3)
+
+    # Take 2 is a perfect match, so take 3 is never generated.
+    assert len(model.calls) == 2
+    assert pieces[0][0][0] == pytest.approx(0.02)
+
+
+def test_best_of_n_seeds_takes_differently(sample_voice_file, monkeypatch):
+    seeds: list[int] = []
+    monkeypatch.setattr(cloner_module, "seed_generators", seeds.append)
+    stt = SequenceSTTModel(["no", "no", "no", "no"])
+    cloner = cloner_module.LocalVoiceCloner(
+        tts_loader=lambda _: TakeTTSModel(), stt_loader=lambda _: stt
+    )
+    cloner.clone_voice(sample_voice_file, "One\nTwo", reference_text="Hi", candidates=2, seed=10)
+    assert seeds == [10, 11, 10, 11]
+
+
+def test_candidates_must_be_in_range(sample_voice_file):
+    cloner = cloner_module.LocalVoiceCloner(tts_loader=lambda _: FakeTTSModel())
+    with pytest.raises(ValueError, match="candidates"):
+        cloner.clone_voice(sample_voice_file, "Hello", reference_text="Hi", candidates=0)
+
+
+def test_word_error_rate_and_tokens():
+    assert cloner_module.word_error_rate(["a", "b", "c"], ["a", "x", "c"]) == pytest.approx(1 / 3)
+    assert cloner_module.spoken_tokens("It's $5!", normalize=True) == ["its", "five", "dollars"]
+    assert cloner_module.spoken_tokens("你好吗") == ["你", "好", "吗"]
+
+
+@pytest.fixture
+def long_voice_file(tmp_path):
+    sr = 24000
+    t = np.arange(sr * 20) / sr
+    path = tmp_path / "long.wav"
+    sf.write(str(path), (0.3 * np.sin(2 * np.pi * 200 * t)).astype(np.float32), sr)
+    return path
+
+
+def test_full_recording_transcript_is_replaced_when_clip_was_cut(long_voice_file):
+    model = FakeTTSModel()
+    stt = FakeSTTModel("Only the first few words.")
+    cloner = cloner_module.LocalVoiceCloner(tts_loader=lambda _: model, stt_loader=lambda _: stt)
+    full = " ".join(["word"] * 40)
+
+    cloner.clone_voice(long_voice_file, "Hello", reference_text=full)
+    cloner.clone_voice(long_voice_file, "Hello", reference_text="Only the first few words here.")
+
+    assert model.calls[0]["ref_text"] == "Only the first few words."
+    assert model.calls[1]["ref_text"] == "Only the first few words here."
+    assert len(stt.calls) == 1
+
+
+def test_given_transcript_is_kept_when_clip_was_not_cut(sample_voice_file):
+    model = FakeTTSModel()
+    cloner = cloner_module.LocalVoiceCloner(
+        tts_loader=lambda _: model, stt_loader=lambda _: pytest.fail("no transcription needed")
+    )
+    full = " ".join(["word"] * 40)
+    cloner.clone_voice(sample_voice_file, "Hello", reference_text=full)
+    assert model.calls[0]["ref_text"] == full

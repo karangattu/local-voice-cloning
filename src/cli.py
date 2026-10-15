@@ -3,7 +3,13 @@ import sys
 from pathlib import Path
 
 from src.audio_utils import save_audio
-from src.cloner import CHATTERBOX_LANGUAGES, ENGINES, SUPPORTED_LANGUAGES, LocalVoiceCloner
+from src.cloner import (
+    CHATTERBOX_LANGUAGES,
+    ENGINES,
+    MAX_CANDIDATES,
+    SUPPORTED_LANGUAGES,
+    LocalVoiceCloner,
+)
 
 
 def parse_args(args=None):
@@ -64,6 +70,21 @@ def parse_args(args=None):
         "--language",
         default="auto",
         help="Output language (default: auto).",
+    )
+    parser.add_argument(
+        "--candidates",
+        type=int,
+        choices=range(1, MAX_CANDIDATES + 1),
+        default=1,
+        metavar=f"1-{MAX_CANDIDATES}",
+        help="Takes to generate per line. The take whose transcript best matches "
+        "the line is kept. Slower, but catches skipped or garbled words (default: 1).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed. The same seed and inputs give the same audio (default: random).",
     )
     parser.add_argument(
         "--cfg-strength",
@@ -128,6 +149,8 @@ def main():
         reference_text=args.ref_text,
         speed=args.speed,
         language=args.language,
+        candidates=args.candidates,
+        seed=args.seed,
         nfe_step=args.steps,
         cfg_strength=args.cfg_strength,
     )

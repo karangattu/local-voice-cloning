@@ -15,6 +15,15 @@ def test_parse_args_defaults():
     assert args.language == "auto"
     assert args.steps is None
     assert args.format is None
+    assert args.candidates == 1
+    assert args.seed is None
+
+
+def test_parse_args_candidates_and_seed():
+    args = parse_args(["-r", "a.wav", "-t", "Hi", "--candidates", "3", "--seed", "7"])
+    assert (args.candidates, args.seed) == (3, 7)
+    with pytest.raises(SystemExit):
+        parse_args(["-r", "a.wav", "-t", "Hi", "--candidates", "6"])
 
 
 def test_parse_args_mp3_format():

@@ -187,6 +187,7 @@ def test_health_reports_version_and_capabilities():
     assert capabilities["speed_control"] == (
         "post-stretch (WSOLA) for qwen/chatterbox, native for omnivoice"
     )
+    assert capabilities["candidates"].startswith("1-5 takes per line")
     assert isinstance(capabilities["transcribe"], bool)
     assert capabilities["sidecar_transcripts"] is True
 
@@ -350,3 +351,24 @@ def test_synthesize_uses_saved_voice_sidecar_transcript(reference_wav, tmp_path,
     assert response.status_code == 200
     assert recorder.clone_kwargs["reference_text"] == "Explicit words."
 
+
+def test_synthesize_forwards_candidates_and_seed(reference_wav, mocker):
+    recorder = RecordingCloner()
+    mocker.patch("src.api.get_shared_cloner", return_value=recorder)
+    with open(reference_wav, "rb") as f:
+        response = client.post(
+            "/synthesize",
+            files={"reference_audio": ("ref.wav", f, "audio/wav")},
+            data={"text": "Hello", "candidates": "3", "seed": "42"},
+        )
+    assert response.status_code == 200
+    assert recorder.clone_kwargs["candidates"] == 3
+    assert recorder.clone_kwargs["seed"] == 42
+
+    with open(reference_wav, "rb") as f:
+        response = client.post(
+            "/synthesize",
+            files={"reference_audio": ("ref.wav", f, "audio/wav")},
+            data={"text": "Hello", "candidates": "9"},
+        )
+    assert response.status_code == 422

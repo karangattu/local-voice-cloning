@@ -25,10 +25,17 @@ from src.audio_utils import (
     time_stretch,
     trim_silence,
 )
+from src.text_normalize import normalize_english_text, should_normalize
 
 MAX_REFERENCE_SECONDS = 12.0
 MAX_SOURCE_SECONDS = 120.0
 LINE_BREAK_PAUSE_SECONDS = 0.4
+CLAUSE_PAUSE_SECONDS = 0.2
+TRAILING_OFF_PAUSE_SECONDS = 0.6
+# mlx-audio forces at least 1.5 in voice-cloning mode. In listening tests 1.2 gave
+# more natural pitch movement with no extra word errors or looping.
+QWEN_REPETITION_PENALTY = 1.2
+MAX_CANDIDATES = 5
 ENGINE_NAME = "Qwen3-TTS 1.7B"
 ENGINES = {"qwen": ENGINE_NAME, "omnivoice": "OmniVoice", "chatterbox": "Chatterbox"}
 OMNIVOICE_MODEL_ID = "k2-fsa/OmniVoice"
@@ -203,13 +210,28 @@ def prepare_gen_text(text: str) -> str:
     return text
 
 
+def _line_end_pause(segment: str) -> float:
+    """Pause after a line, by its last punctuation: short after a clause, long
+    after a trailing-off ellipsis, and a sentence pause otherwise."""
+    if segment.endswith(("…", "...")):
+        return TRAILING_OFF_PAUSE_SECONDS
+    if segment.endswith((",", ";", ":", "—", "–", "-")):
+        return CLAUSE_PAUSE_SECONDS
+    return LINE_BREAK_PAUSE_SECONDS
+
+
 def _script_segments(text: str) -> list[tuple[str, float]]:
     segments: list[tuple[str, float]] = []
     pending_pause = 0.0
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     for index, line in enumerate(normalized.split("\n")):
         if index:
-            pending_pause += LINE_BREAK_PAUSE_SECONDS
+            # The first line break after a line takes its pause from that line's
+            # punctuation; each extra blank line adds a full sentence pause.
+            if pending_pause == 0.0 and segments:
+                pending_pause = _line_end_pause(segments[-1][0])
+            else:
+                pending_pause += LINE_BREAK_PAUSE_SECONDS
         matches = list(PAUSE_TAG_PATTERN.finditer(line))
         if not matches:
             prepared = prepare_gen_text(line)
@@ -236,6 +258,38 @@ def _script_segments(text: str) -> list[tuple[str, float]]:
             segments.append((prepared_tail, pending_pause if segments else 0.0))
             pending_pause = 0.0
     return segments
+
+
+_CJK = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
+
+
+def spoken_tokens(text: str, normalize: bool = False) -> list[str]:
+    """Words to compare a script with a transcript. Chinese, Japanese and
+    Korean have no spaces between words, so they compare per character."""
+    if normalize:
+        text = normalize_english_text(text)
+    text = text.lower().replace("'", "").replace("’", "")
+    if _CJK.search(text):
+        return [char for char in text if char.isalnum()]
+    return re.findall(r"\w+", text)
+
+
+def word_error_rate(expected: list[str], heard: list[str]) -> float:
+    """Word-level edit distance divided by the expected word count."""
+    distances = list(range(len(heard) + 1))
+    for i, word in enumerate(expected, 1):
+        previous, distances[0] = distances[0], i
+        for j, other in enumerate(heard, 1):
+            previous, distances[j] = (
+                distances[j],
+                min(distances[j] + 1, distances[j - 1] + 1, previous + (word != other)),
+            )
+    return distances[-1] / max(1, len(expected))
+
+
+def transcript_outlasts_clip(transcript: str, clip_transcript: str) -> bool:
+    """Whether a transcript has clearly more words than the clip contains."""
+    return len(spoken_tokens(transcript)) > 1.2 * len(spoken_tokens(clip_transcript)) + 2
 
 
 def seed_generators(seed: int) -> None:
@@ -273,6 +327,8 @@ class _CachedReference:
     audio: np.ndarray
     sample_rate: int
     transcript: str | None = None
+    asr_transcript: str | None = None
+    truncated: bool = False
 
 
 class _ReferenceCache:
@@ -292,8 +348,10 @@ class _ReferenceCache:
         self._entries.move_to_end(key)
         return entry
 
-    def put(self, key: str, sample_rate: int, audio: np.ndarray) -> _CachedReference:
-        entry = _CachedReference(audio=audio, sample_rate=sample_rate)
+    def put(
+        self, key: str, sample_rate: int, audio: np.ndarray, truncated: bool = False
+    ) -> _CachedReference:
+        entry = _CachedReference(audio=audio, sample_rate=sample_rate, truncated=truncated)
         self._entries[key] = entry
         self._entries.move_to_end(key)
         while len(self._entries) > self.maxsize:
@@ -397,45 +455,120 @@ class LocalVoiceCloner:
             raise RuntimeError("The reference recording could not be transcribed.")
         return transcript
 
-    def _load_reference(self, reference_audio_path: str | Path) -> tuple[np.ndarray, int]:
+    def _load_reference(self, reference_audio_path: str | Path) -> tuple[np.ndarray, int, bool]:
         tensor_audio, ref_sr = load_audio(
             reference_audio_path,
             target_sr=self.sample_rate,
             max_duration_seconds=MAX_SOURCE_SECONDS,
         )
-        audio_np = prepare_reference_audio(
+        audio_np, truncated = prepare_reference_audio(
             tensor_audio.squeeze().numpy(),
             ref_sr,
             max_duration_seconds=MAX_REFERENCE_SECONDS,
+            return_truncated=True,
         )
-        return normalize_audio(audio_np), ref_sr
+        return normalize_audio(audio_np), ref_sr, truncated
 
-    def _canonical_reference(self, reference_audio_path: str | Path) -> tuple[str, _CachedReference]:
+    def _canonical_reference(
+        self, reference_audio_path: str | Path
+    ) -> tuple[str, _CachedReference]:
         """Canonicalized reference audio, memoized by content hash."""
         digest = reference_content_hash(reference_audio_path)
         cached = self._reference_cache.get(digest, self.sample_rate)
         if cached is None:
-            audio_np, ref_sr = self._load_reference(reference_audio_path)
+            audio_np, ref_sr, truncated = self._load_reference(reference_audio_path)
             if len(audio_np) == 0:
                 raise ValueError("Reference audio is empty.")
-            cached = self._reference_cache.put(digest, ref_sr, audio_np)
+            cached = self._reference_cache.put(digest, ref_sr, audio_np, truncated)
         return digest, cached
+
+    def _asr_transcript(self, cached: _CachedReference) -> str:
+        """Whisper transcript of the canonical (trimmed) clip, memoized."""
+        if cached.asr_transcript is None:
+            cached.asr_transcript = self._transcribe_audio(cached.audio, cached.sample_rate)
+        return cached.asr_transcript
+
+    def _transcribe_audio(self, audio: np.ndarray, sample_rate: int) -> str:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            path = Path(tmp.name)
+        try:
+            sf.write(str(path), audio, sample_rate, subtype="PCM_16")
+            return self._transcribe_canonical(path)
+        finally:
+            path.unlink(missing_ok=True)
 
     def transcribe(self, reference_audio_path: str | Path) -> str:
         digest, cached = self._canonical_reference(reference_audio_path)
         if cached.transcript:
             return cached.transcript
-
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            canonical_ref_path = Path(tmp.name)
-
-        try:
-            sf.write(str(canonical_ref_path), cached.audio, cached.sample_rate, subtype="PCM_16")
-            transcript = self._transcribe_canonical(canonical_ref_path)
-        finally:
-            canonical_ref_path.unlink(missing_ok=True)
+        transcript = self._asr_transcript(cached)
         self._reference_cache.set_transcript(digest, transcript)
         return transcript
+
+    def _take_error(
+        self, segment: str, audio: np.ndarray, sample_rate: int, normalize: bool
+    ) -> float:
+        """Word error rate of one generated take against its script line."""
+        try:
+            heard = self._transcribe_audio(audio, sample_rate)
+        except RuntimeError:
+            return float("inf")
+        return word_error_rate(spoken_tokens(segment, normalize), spoken_tokens(heard, normalize))
+
+    def _generate_segment(
+        self,
+        tts_model: Any,
+        segment: str,
+        ref_path: Path,
+        ref_audio: Any,
+        transcript: str,
+        speed: float,
+        language: str,
+        repetition_penalty: float,
+    ) -> list[Any]:
+        if self.engine == "chatterbox":
+            wav = tts_model.generate(segment, audio_prompt_path=str(ref_path))
+            if hasattr(wav, "detach"):
+                wav = wav.detach().cpu().numpy()
+            return [
+                SimpleNamespace(
+                    audio=np.asarray(wav),
+                    sample_rate=int(getattr(tts_model, "sr", self.sample_rate)),
+                )
+            ]
+        if self.engine == "omnivoice":
+            audio = tts_model.generate(
+                text=segment,
+                ref_audio=str(ref_path),
+                ref_text=transcript,
+                speed=speed,
+                language=None if language == "auto" else language,
+                num_step=32 if self.quality == "high" else 16,
+            )
+            return [SimpleNamespace(audio=piece, sample_rate=self.sample_rate) for piece in audio]
+        if ref_audio is not None:
+            # Call the cloning path directly: generate() raises the penalty to 1.5.
+            return list(
+                tts_model._generate_icl(
+                    text=segment,
+                    ref_audio=ref_audio,
+                    ref_text=transcript,
+                    language=language,
+                    repetition_penalty=repetition_penalty,
+                )
+            )
+        return list(
+            tts_model.generate(
+                text=segment,
+                ref_audio=str(ref_path),
+                ref_text=transcript,
+                speed=1.0,
+                lang_code=language,
+                stream=False,
+                verbose=False,
+                repetition_penalty=repetition_penalty,
+            )
+        )
 
     def clone_voice(
         self,
@@ -446,10 +579,20 @@ class LocalVoiceCloner:
         language: str = "auto",
         progress_callback: ProgressCallback | None = None,
         seed: int | None = None,
+        candidates: int = 1,
+        repetition_penalty: float = QWEN_REPETITION_PENALTY,
+        normalize_text: bool = True,
         **_legacy_options,
     ) -> SynthesisResult:
+        """Synthesize text in the reference voice.
+
+        candidates > 1 generates that many takes per line and keeps the one whose
+        Whisper transcript best matches the line. normalize_text spells out
+        numbers and symbols in English scripts."""
         if not text.strip():
             raise ValueError("Input text cannot be empty.")
+        if not 1 <= candidates <= MAX_CANDIDATES:
+            raise ValueError(f"candidates must be between 1 and {MAX_CANDIDATES}.")
         if self.engine == "chatterbox" and language not in CHATTERBOX_LANGUAGES:
             raise ValueError(
                 f"Unsupported Chatterbox language '{language}'. "
@@ -468,12 +611,30 @@ class LocalVoiceCloner:
             notify("load")
             tts_model = self._ensure_tts_model()
 
-            transcript = reference_text.strip()
-            if not transcript:
-                transcript = sidecar_transcript(reference_audio_path) or cached.transcript or ""
-            if not transcript and self.engine != "chatterbox":
-                transcript = self._transcribe_canonical(canonical_ref_path)
+            given = reference_text.strip() or sidecar_transcript(reference_audio_path)
+            transcript = given or cached.transcript or ""
+            if self.engine != "chatterbox":
+                if not transcript:
+                    transcript = self._asr_transcript(cached)
+                elif given and cached.truncated:
+                    # The clip was cut to fit. A transcript of the full recording
+                    # makes the model say words the clip does not contain.
+                    clip_transcript = self._asr_transcript(cached)
+                    if transcript_outlasts_clip(given, clip_transcript):
+                        transcript = clip_transcript
             self._reference_cache.set_transcript(digest, transcript)
+
+            ref_audio = None
+            if (
+                self.engine == "qwen"
+                and transcript
+                and hasattr(tts_model, "_generate_icl")
+                and getattr(getattr(tts_model, "speech_tokenizer", None), "has_encoder", False)
+            ):
+                from mlx_audio.utils import load_audio as load_mlx_audio
+
+                ref_audio = load_mlx_audio(str(canonical_ref_path), sample_rate=self.sample_rate)
+            normalize = normalize_text and should_normalize(text, language, self.engine)
 
             notify("voice")
             sample_rate = self.sample_rate
@@ -482,45 +643,37 @@ class LocalVoiceCloner:
             # same sampling noise and pitch and pace do not drift between lines.
             job_seed = seed if seed is not None else int.from_bytes(os.urandom(4), "little")
             for segment, segment_pause in _script_segments(text):
-                seed_generators(job_seed)
-                if self.engine == "chatterbox":
-                    wav = tts_model.generate(
+                if normalize:
+                    segment = normalize_english_text(segment)
+                generations: list[Any] = []
+                best_error = float("inf")
+                # Take k uses seed job_seed + k on every line, so lines stay consistent.
+                for take in range(candidates):
+                    seed_generators(job_seed + take)
+                    takes = self._generate_segment(
+                        tts_model,
                         segment,
-                        audio_prompt_path=str(canonical_ref_path),
+                        canonical_ref_path,
+                        ref_audio,
+                        transcript,
+                        speed,
+                        language,
+                        repetition_penalty,
                     )
-                    if hasattr(wav, "detach"):
-                        wav = wav.detach().cpu().numpy()
-                    generations = [
-                        SimpleNamespace(
-                            audio=np.asarray(wav),
-                            sample_rate=int(getattr(tts_model, "sr", self.sample_rate)),
-                        )
-                    ]
-                elif self.engine == "omnivoice":
-                    audio = tts_model.generate(
-                        text=segment,
-                        ref_audio=str(canonical_ref_path),
-                        ref_text=transcript,
-                        speed=speed,
-                        language=None if language == "auto" else language,
-                        num_step=32 if self.quality == "high" else 16,
-                    )
-                    generations = [
-                        SimpleNamespace(audio=piece, sample_rate=self.sample_rate)
-                        for piece in audio
-                    ]
-                else:
-                    generations = list(
-                        tts_model.generate(
-                            text=segment,
-                            ref_audio=str(canonical_ref_path),
-                            ref_text=transcript,
-                            speed=1.0,
-                            lang_code=language,
-                            stream=False,
-                            verbose=False,
-                        )
-                    )
+                    if not takes:
+                        continue
+                    if candidates == 1:
+                        generations = takes
+                        break
+                    take_audio = np.concatenate(
+                        [np.asarray(item.audio).reshape(-1) for item in takes]
+                    ).astype(np.float32)
+                    take_rate = int(getattr(takes[0], "sample_rate", sample_rate))
+                    error = self._take_error(segment, take_audio, take_rate, normalize)
+                    if not generations or error < best_error:
+                        generations, best_error = takes, error
+                    if error == 0.0:
+                        break
                 if not generations:
                     raise RuntimeError("The voice model returned no audio.")
 

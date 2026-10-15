@@ -363,3 +363,11 @@ def test_enhance_audio_keeps_breath_level_sounds():
 
     # The pause between words loses no more than about 7 dB.
     assert ratio(enhanced) / ratio(audio) > 10 ** (-8 / 20)
+
+
+def test_prepare_reference_reports_truncation():
+    sr = 24000
+    short = _make_tone(sr, 3.0)
+    long = _make_tone(sr, 20.0)
+    assert prepare_reference_audio(short, sr, return_truncated=True)[1] is False
+    assert prepare_reference_audio(long, sr, return_truncated=True)[1] is True

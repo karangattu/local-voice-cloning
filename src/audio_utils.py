@@ -219,25 +219,30 @@ def prepare_reference_audio(
     max_duration_seconds: float = 12.0,
     max_pause_seconds: float = 0.4,
     tail_silence_seconds: float = 0.3,
-) -> np.ndarray:
+    return_truncated: bool = False,
+) -> np.ndarray | tuple[np.ndarray, bool]:
     """Clean a voice sample before it is used as a cloning prompt.
 
     The model continues speech directly from the end of the reference. A
     reference that is cut mid-word leaks a burst of that word into the start
     of every generated line, and long pauses teach the model to pause. This
     function trims the edges, shortens long pauses, cuts at a pause instead of
-    mid-word, and ends the sample with a short silence."""
+    mid-word, and ends the sample with a short silence.
+
+    With return_truncated=True, also return whether speech was cut to fit
+    max_duration_seconds. A transcript of the full recording then no longer
+    matches the clip."""
     frame = max(1, int(sample_rate * 0.02))
     n_frames = len(audio) // frame
     if n_frames == 0:
-        return audio.astype(np.float32)
+        return (audio.astype(np.float32), False) if return_truncated else audio.astype(np.float32)
     frames = audio[: n_frames * frame].reshape(n_frames, frame)
     frame_db = 20.0 * np.log10(np.sqrt(np.mean(frames**2, axis=1)) + 1e-9)
     threshold_db = max(-50.0, float(np.percentile(frame_db, 95)) - 35.0)
     active = frame_db > threshold_db
     speech = np.flatnonzero(active)
     if len(speech) == 0:
-        return audio.astype(np.float32)
+        return (audio.astype(np.float32), False) if return_truncated else audio.astype(np.float32)
 
     edge_pad = int(0.1 / 0.02)
     first = max(0, speech[0] - edge_pad)
@@ -263,7 +268,8 @@ def prepare_reference_audio(
     kept_active = active[kept]
 
     max_frames = int(max_duration_seconds / 0.02)
-    if len(kept) > max_frames:
+    truncated = len(kept) > max_frames
+    if truncated:
         window_start = int(max_frames * 0.6)
         pauses = np.flatnonzero(~kept_active[window_start:max_frames])
         if len(pauses):
@@ -281,7 +287,8 @@ def prepare_reference_audio(
     audio[:n_fade] *= np.linspace(0.0, 1.0, n_fade, dtype=np.float32)
     # End on room tone, not digital silence, so the model keeps the background noise.
     tail = room_tone(frames.reshape(-1), sample_rate, int(sample_rate * tail_silence_seconds))
-    return join_with_room_tone([(audio, 0.0)], sample_rate, tail=tail)
+    prepared = join_with_room_tone([(audio, 0.0)], sample_rate, tail=tail)
+    return (prepared, truncated) if return_truncated else prepared
 
 
 def room_tone(audio: np.ndarray, sample_rate: int, num_samples: int, seed: int = 0) -> np.ndarray:

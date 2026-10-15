@@ -53,6 +53,7 @@ def test_generation_history_comparison_and_downloads(tmp_path, monkeypatch):
         "language": "auto",
         "speech_text": "First script.",
         "synthesis_speed": 1.0,
+        "takes_per_line": "1",
         "script_preset": "custom",
         "record_template": "standard",
         "ref_transcript": "Reference words.",

@@ -27,6 +27,7 @@ from src.cloner import (
     CHATTERBOX_MODEL_IDS,
     ENGINE_NAME,
     ENGINES,
+    MAX_CANDIDATES,
     MODEL_VARIANTS,
     SUPPORTED_LANGUAGES,
     detect_device,
@@ -120,6 +121,7 @@ def health():
         "version": {"package": PACKAGE_VERSION, "git": GIT_VERSION},
         "capabilities": {
             "speed_control": "post-stretch (WSOLA) for qwen/chatterbox, native for omnivoice",
+            "candidates": f"1-{MAX_CANDIDATES} takes per line, best kept by transcript match",
             "transcribe": transcribe_backend_available(),
             "sidecar_transcripts": True,
         },
@@ -284,6 +286,18 @@ async def synthesize(
     ] = 2.0,
     output_format: Annotated[str, Form(description="Output audio format: wav or mp3")] = "wav",
     engine: Annotated[str, Form(description="Voice engine: qwen, omnivoice, or chatterbox")] = "qwen",
+    candidates: Annotated[
+        int,
+        Form(
+            ge=1,
+            le=MAX_CANDIDATES,
+            description="Takes per line; the take whose transcript best matches is kept",
+        ),
+    ] = 1,
+    seed: Annotated[
+        int | None,
+        Form(description="Random seed for reproducible output (random if empty)"),
+    ] = None,
 ):
     output_format = output_format.lower().lstrip(".")
     if output_format not in SUPPORTED_OUTPUT_FORMATS:
@@ -336,6 +350,8 @@ async def synthesize(
                 reference_text=reference_text,
                 speed=speed,
                 language=language,
+                candidates=candidates,
+                seed=seed,
                 nfe_step=steps,
                 cfg_strength=cfg_strength,
             )
