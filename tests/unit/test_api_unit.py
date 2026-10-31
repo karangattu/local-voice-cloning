@@ -372,3 +372,66 @@ def test_synthesize_forwards_candidates_and_seed(reference_wav, mocker):
             data={"text": "Hello", "candidates": "9"},
         )
     assert response.status_code == 422
+
+
+def test_health_answers_while_a_synthesis_is_running(reference_wav, monkeypatch):
+    """A synthesis runs in a worker thread, so it must not block /health."""
+    import asyncio
+    import threading
+    import time
+
+    import httpx
+
+    started = threading.Event()
+
+    class SlowCloner:
+        def clone_voice(self, **_kwargs):
+            started.set()
+            time.sleep(1.0)
+            return SimpleNamespace(
+                audio=np.zeros(2400, dtype=np.float32), sample_rate=24000, duration_seconds=0.1
+            )
+
+    monkeypatch.setattr(api_module, "get_shared_cloner", lambda *_a, **_k: SlowCloner())
+    ref_bytes = reference_wav.read_bytes()
+
+    async def run():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            finished: dict[str, float] = {}
+
+            async def synthesize():
+                response = await client.post(
+                    "/synthesize",
+                    files={"reference_audio": ("ref.wav", ref_bytes, "audio/wav")},
+                    data={"text": "Hello"},
+                )
+                finished["synthesize"] = time.perf_counter()
+                return response
+
+            async def health():
+                while not started.is_set():
+                    await asyncio.sleep(0.01)
+                response = await client.get("/health")
+                finished["health"] = time.perf_counter()
+                return response
+
+            synth_response, health_response = await asyncio.gather(synthesize(), health())
+            return synth_response, health_response, finished
+
+    synth_response, health_response, finished = asyncio.run(run())
+    assert synth_response.status_code == 200
+    assert synth_response.headers["content-type"] == "audio/wav"
+    assert synth_response.headers["x-sample-rate"] == "24000"
+    assert health_response.status_code == 200
+    assert "queue" in health_response.json()
+    assert finished["health"] < finished["synthesize"]
+
+
+def test_queue_endpoint_reports_loaded_models(monkeypatch):
+    monkeypatch.setattr(
+        api_module, "shared_queue_stats", lambda: {"qwen:high": {"requests_in_flight": 2}}
+    )
+    response = client.get("/queue")
+    assert response.status_code == 200
+    assert response.json() == {"queue": {"qwen:high": {"requests_in_flight": 2}}}

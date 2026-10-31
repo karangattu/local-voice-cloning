@@ -20,13 +20,16 @@ from typing import Annotated
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
+from starlette.concurrency import run_in_threadpool
 
 from src.audio_utils import SUPPORTED_OUTPUT_FORMATS, save_audio
 from src.cloner import (
+    BATCHING_ENABLED,
     CHATTERBOX_LANGUAGES,
     CHATTERBOX_MODEL_IDS,
     ENGINE_NAME,
     ENGINES,
+    MAX_BATCH_SIZE,
     MAX_CANDIDATES,
     MODEL_VARIANTS,
     SUPPORTED_LANGUAGES,
@@ -34,6 +37,7 @@ from src.cloner import (
     get_shared_cloner,
     is_shared_cloner_loaded,
     model_id_for_quality,
+    shared_queue_stats,
     sidecar_transcript,
     transcribe_backend_available,
     validate_engine,
@@ -124,8 +128,19 @@ def health():
             "candidates": f"1-{MAX_CANDIDATES} takes per line, best kept by transcript match",
             "transcribe": transcribe_backend_available(),
             "sidecar_transcripts": True,
+            "batching": (
+                f"qwen takes and concurrent same-voice requests share batches "
+                f"of up to {MAX_BATCH_SIZE}" if BATCHING_ENABLED else "off"
+            ),
         },
+        "queue": shared_queue_stats(),
     }
+
+
+@app.get("/queue")
+def queue():
+    """Requests in flight and batch-queue depth per loaded model."""
+    return {"queue": shared_queue_stats()}
 
 
 @app.get("/info")
@@ -226,6 +241,11 @@ async def transcribe(
         raise HTTPException(status_code=413, detail="Reference audio exceeds the 50 MB limit.")
 
     ref_suffix = Path(reference_audio.filename or "reference.wav").suffix or ".wav"
+    # Model work blocks; run it in a worker thread so the event loop stays free.
+    return await run_in_threadpool(_transcribe_bytes, ref_bytes, ref_suffix, quality)
+
+
+def _transcribe_bytes(ref_bytes: bytes, ref_suffix: str, quality: str) -> dict[str, str]:
     with tempfile.TemporaryDirectory() as tmpdir:
         ref_path = Path(tmpdir) / f"reference{ref_suffix}"
         ref_path.write_bytes(ref_bytes)
@@ -339,6 +359,52 @@ async def synthesize(
     ref_suffix = Path(reference_audio.filename or "reference.wav").suffix or ".wav"
     reference_text = ref_text.strip() or _uploaded_sidecar_transcript(reference_audio.filename)
 
+    # Model work blocks; run it in a worker thread so /health and other requests
+    # are served while it runs.
+    audio_bytes, result = await run_in_threadpool(
+        _synthesize_bytes,
+        ref_bytes=ref_bytes,
+        ref_suffix=ref_suffix,
+        text=text,
+        reference_text=reference_text,
+        speed=speed,
+        quality=quality,
+        language=language,
+        steps=steps,
+        cfg_strength=cfg_strength,
+        output_format=output_format,
+        engine=engine,
+        candidates=candidates,
+        seed=seed,
+    )
+
+    return Response(
+        content=audio_bytes,
+        media_type=MEDIA_TYPES[output_format],
+        headers={
+            "Content-Disposition": f'attachment; filename="cloned_voice.{output_format}"',
+            "X-Duration-Seconds": f"{result.duration_seconds:.3f}",
+            "X-Sample-Rate": str(result.sample_rate),
+        },
+    )
+
+
+def _synthesize_bytes(
+    *,
+    ref_bytes: bytes,
+    ref_suffix: str,
+    text: str,
+    reference_text: str,
+    speed: float,
+    quality: str,
+    language: str,
+    steps: int | None,
+    cfg_strength: float,
+    output_format: str,
+    engine: str,
+    candidates: int,
+    seed: int | None,
+):
     with tempfile.TemporaryDirectory() as tmpdir:
         ref_path = Path(tmpdir) / f"reference{ref_suffix}"
         ref_path.write_bytes(ref_bytes)
@@ -367,12 +433,4 @@ async def synthesize(
                 traceback_text=traceback.format_exc(),
             ) from e
 
-    return Response(
-        content=audio_bytes,
-        media_type=MEDIA_TYPES[output_format],
-        headers={
-            "Content-Disposition": f'attachment; filename="cloned_voice.{output_format}"',
-            "X-Duration-Seconds": f"{result.duration_seconds:.3f}",
-            "X-Sample-Rate": str(result.sample_rate),
-        },
-    )
+    return audio_bytes, result

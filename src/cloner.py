@@ -1,3 +1,4 @@
+import functools
 import hashlib
 import importlib.util
 import json
@@ -25,6 +26,7 @@ from src.audio_utils import (
     time_stretch,
     trim_silence,
 )
+from src.qwen_batch import GenerationBatcher, generate_icl_batch, supports_batched_icl
 from src.text_normalize import normalize_english_text, should_normalize
 
 MAX_REFERENCE_SECONDS = 12.0
@@ -64,6 +66,21 @@ SUPPORTED_LANGUAGES = (
 )
 ProgressCallback = Callable[[str], None]
 REFERENCE_CACHE_SIZE = 4
+
+
+def _env_number(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except ValueError:
+        return default
+
+
+# Batched Qwen generation: takes of one line, and lines from concurrent requests
+# that share a reference voice and language, run as one batched MLX pass.
+# VOICE_BATCHING=0 restores one-at-a-time generation.
+BATCHING_ENABLED = os.environ.get("VOICE_BATCHING", "1").strip() not in ("0", "false", "no")
+MAX_BATCH_SIZE = max(1, int(_env_number("VOICE_MAX_BATCH_SIZE", 8)))
+BATCH_WINDOW_SECONDS = max(0.0, _env_number("VOICE_BATCH_WINDOW_MS", 50) / 1000)
 
 
 def sidecar_transcript(reference_audio_path: str | Path) -> str:
@@ -365,6 +382,22 @@ class _ReferenceCache:
             self._entries.move_to_end(key)
 
 
+def _counts_in_flight(method):
+    """Count calls in progress, for queue_stats()."""
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._counter_lock:
+            self._requests_in_flight += 1
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            with self._counter_lock:
+                self._requests_in_flight -= 1
+
+    return wrapper
+
+
 class LocalVoiceCloner:
     def __init__(
         self,
@@ -402,7 +435,15 @@ class LocalVoiceCloner:
         self._tts_model: Any | None = None
         self._stt_model: Any | None = None
         self._model_lock = threading.Lock()
+        # One lock per loaded model: MLX/PyTorch inference never runs twice at
+        # once on the same weights, even when requests arrive in parallel.
+        self._tts_lock = threading.Lock()
+        self._stt_lock = threading.Lock()
         self._reference_cache = _ReferenceCache()
+        self._batcher: GenerationBatcher | None = None
+        self._batcher_lock = threading.Lock()
+        self._requests_in_flight = 0
+        self._counter_lock = threading.Lock()
 
     @property
     def model_loaded(self) -> bool:
@@ -446,10 +487,12 @@ class LocalVoiceCloner:
         return timings
 
     def _transcribe_canonical(self, canonical_ref_path: Path | str) -> str:
-        stt_result = self._ensure_stt_model().generate(
-            str(canonical_ref_path),
-            verbose=False,
-        )
+        stt_model = self._ensure_stt_model()
+        with self._stt_lock:
+            stt_result = stt_model.generate(
+                str(canonical_ref_path),
+                verbose=False,
+            )
         transcript = str(getattr(stt_result, "text", "")).strip()
         if not transcript:
             raise RuntimeError("The reference recording could not be transcribed.")
@@ -570,6 +613,78 @@ class LocalVoiceCloner:
             )
         )
 
+    def _batching_available(self, tts_model: Any, ref_audio: Any) -> bool:
+        return (
+            BATCHING_ENABLED
+            and self.engine == "qwen"
+            and ref_audio is not None
+            and supports_batched_icl(tts_model)
+        )
+
+    def _get_batcher(self) -> GenerationBatcher:
+        with self._batcher_lock:
+            if self._batcher is None:
+                self._batcher = GenerationBatcher(
+                    self._run_qwen_batch,
+                    max_batch_size=MAX_BATCH_SIZE,
+                    window_seconds=BATCH_WINDOW_SECONDS,
+                    name=f"qwen-batcher-{self.quality}",
+                )
+            return self._batcher
+
+    def _run_qwen_batch(self, payload: tuple, texts: list[str], seeds: list[int]) -> list[Any]:
+        tts_model, ref_audio, transcript, language, repetition_penalty = payload
+        with self._tts_lock:
+            audios = generate_icl_batch(
+                tts_model,
+                texts,
+                seeds,
+                ref_audio=ref_audio,
+                ref_text=transcript,
+                language=language,
+                repetition_penalty=repetition_penalty,
+            )
+        rate = int(getattr(tts_model, "sample_rate", self.sample_rate))
+        return [
+            [SimpleNamespace(audio=np.array(audio, dtype=np.float32), sample_rate=rate)]
+            if audio.shape[0]
+            else []
+            for audio in audios
+        ]
+
+    def _batched_takes(
+        self,
+        tts_model: Any,
+        group: tuple,
+        segment: str,
+        seeds: list[int],
+        ref_audio: Any,
+        transcript: str,
+        language: str,
+        repetition_penalty: float,
+    ) -> list[list[Any]]:
+        """All takes of one line in one batch (shared with concurrent requests)."""
+        payload = (tts_model, ref_audio, transcript, language, repetition_penalty)
+        return self._get_batcher().submit(group, payload, [segment] * len(seeds), seeds)
+
+    def close(self) -> None:
+        """Stop the batch worker thread; it holds a reference to the model."""
+        with self._batcher_lock:
+            batcher, self._batcher = self._batcher, None
+        if batcher is not None:
+            batcher.close()
+
+    def queue_stats(self) -> dict[str, Any]:
+        """Requests inside clone_voice and the batch queue, for /health and /queue."""
+        with self._counter_lock:
+            in_flight = self._requests_in_flight
+        stats: dict[str, Any] = {"requests_in_flight": in_flight, "batching": False}
+        batcher = self._batcher
+        if batcher is not None:
+            stats.update(batcher.stats(), batching=True)
+        return stats
+
+    @_counts_in_flight
     def clone_voice(
         self,
         reference_audio_path: str | Path,
@@ -635,6 +750,8 @@ class LocalVoiceCloner:
 
                 ref_audio = load_mlx_audio(str(canonical_ref_path), sample_rate=self.sample_rate)
             normalize = normalize_text and should_normalize(text, language, self.engine)
+            batched = self._batching_available(tts_model, ref_audio)
+            batch_group = (digest, transcript, language, repetition_penalty)
 
             notify("voice")
             sample_rate = self.sample_rate
@@ -648,18 +765,45 @@ class LocalVoiceCloner:
                 generations: list[Any] = []
                 best_error = float("inf")
                 # Take k uses seed job_seed + k on every line, so lines stay consistent.
+                seeds = [job_seed + take for take in range(candidates)]
+                batch_takes: dict[int, list[Any]] = {}
                 for take in range(candidates):
-                    seed_generators(job_seed + take)
-                    takes = self._generate_segment(
-                        tts_model,
-                        segment,
-                        canonical_ref_path,
-                        ref_audio,
-                        transcript,
-                        speed,
-                        language,
-                        repetition_penalty,
-                    )
+                    if batched:
+                        if take not in batch_takes:
+                            # Take 1 runs alone (identical to the sequential path), so a
+                            # perfect take 1 still ends the line early. Any remaining
+                            # takes then run together in one batch.
+                            wanted = [0] if take == 0 else list(range(take, candidates))
+                            batch_takes.update(
+                                zip(
+                                    wanted,
+                                    self._batched_takes(
+                                        tts_model,
+                                        batch_group,
+                                        segment,
+                                        [seeds[k] for k in wanted],
+                                        ref_audio,
+                                        transcript,
+                                        language,
+                                        repetition_penalty,
+                                    ),
+                                    strict=True,
+                                )
+                            )
+                        takes = batch_takes[take]
+                    else:
+                        with self._tts_lock:
+                            seed_generators(seeds[take])
+                            takes = self._generate_segment(
+                                tts_model,
+                                segment,
+                                canonical_ref_path,
+                                ref_audio,
+                                transcript,
+                                speed,
+                                language,
+                                repetition_penalty,
+                            )
                     if not takes:
                         continue
                     if candidates == 1:
@@ -711,6 +855,13 @@ _shared_cloners: dict[tuple[str, str], LocalVoiceCloner] = {}
 _shared_cloner_lock = threading.Lock()
 
 
+def shared_queue_stats() -> dict[str, dict[str, Any]]:
+    """Queue depth per shared cloner, keyed "engine:quality"."""
+    with _shared_cloner_lock:
+        cloners = dict(_shared_cloners)
+    return {f"{engine}:{quality}": c.queue_stats() for (engine, quality), c in cloners.items()}
+
+
 def get_shared_cloner(quality: str = "high", engine: str = "qwen") -> LocalVoiceCloner:
     validate_engine(engine)
     model_id_for_quality(quality)
@@ -731,7 +882,10 @@ def is_shared_cloner_loaded(quality: str | None = None, engine: str = "qwen") ->
 def unload_shared_cloners() -> int:
     with _shared_cloner_lock:
         count = len(_shared_cloners)
+        cloners = list(_shared_cloners.values())
         _shared_cloners.clear()
+    for cloner in cloners:
+        cloner.close()
     import gc
 
     gc.collect()

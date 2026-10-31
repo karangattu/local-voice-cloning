@@ -61,6 +61,26 @@ Start the API:
 uv run uvicorn src.api:app --port 8001
 ```
 
+Synthesis runs in worker threads, so `/health` answers while a request is in progress.
+With the Qwen engine and `candidates` above 1, take 1 runs first. If its transcript
+matches the line, the other takes are skipped. If not, takes 2 to N run together in
+one batched pass. Concurrent requests with the same reference voice and language
+share a batch. `GET /queue` (also in `/health`) shows requests in flight and queued
+rows per model.
+
+Seeds: take k uses `seed + k - 1`. A seed gives the exact same take only when the
+batch contents are the same. A single-take request, and take 1 of any request, match
+the output of unbatched generation, unless a concurrent request joins the same batch.
+Takes 2 to N run inside a batch, so they can differ slightly from unbatched takes with
+the same seed. Transcript accuracy is the same.
+
+Batching settings (environment variables):
+
+- `VOICE_BATCHING`: set to `0` to generate one take at a time with no batching.
+- `VOICE_BATCH_WINDOW_MS`: how long a new batch waits for other requests to join
+  (default 50).
+- `VOICE_MAX_BATCH_SIZE`: the most takes in one batch (default 8).
+
 Open `http://127.0.0.1:8001/docs` for API docs, or generate speech via curl:
 
 ```bash
