@@ -1,43 +1,38 @@
-# Local Voice Cloning
+# Local voice cloning
 
-Clone a voice locally on your Mac using Apple MLX. Audio never leaves your computer.
-
-Provide a short audio sample and text, and the app generates speech as a WAV or MP3 file.
+This app clones a voice on your Mac with Apple MLX. Audio never leaves your computer. You provide a short audio sample and text, and the app generates speech as a WAV or MP3 file.
 
 ![Sona Voice Studio](docs/app-screenshot.png)
 
-## Requirements
-
-- Apple Silicon Mac (M-series)
-- Python 3.10+
-- ~8 GB free disk space (models download automatically on first run)
-
 ## Setup
+
+You need an Apple Silicon Mac (M-series), Python 3.10 or newer, and about 8 GB of free disk space. The app downloads models automatically on the first run. Install the dependencies with `uv sync`, or use `uv sync --extra dev` for development. Run the test suite with `uv run pytest`:
 
 ```bash
 uv sync
+uv run pytest
 ```
 
-For development:
+## Web app
 
-```bash
-uv sync --extra dev
-```
-
-## Web App
-
-Start the app:
+Start the Shiny web app:
 
 ```bash
 uv run shiny run app.py
 ```
 
-Open the URL shown in your terminal (e.g. `http://127.0.0.1:<port>`), then:
-1. Record or upload a 5–12 second voice clip, or select / import a saved voice.
-2. Check the automatic transcript and fix any mistakes.
-3. Enter your script and click **Create audio**.
+Open the URL from your terminal, for example `http://127.0.0.1:<port>`, and follow these steps:
+
+1. Record or upload a 5 to 12 second voice clip, or select or import a saved voice.
+2. Fix any mistakes in the automatic transcript.
+3. Enter your script in the text box.
+4. Click Create audio.
+
+For best results, record clear, natural speech from one speaker in a quiet room. Use commas and periods in your script to control pauses and pacing.
 
 ## CLI
+
+Generate speech from the command line:
 
 ```bash
 uv run python -m src.cli \
@@ -46,42 +41,33 @@ uv run python -m src.cli \
   --output output.wav
 ```
 
-Options:
-- `--quality`: `high` (default) or `fast`
-- `--language`: Output language. The default value is `auto`. Chatterbox accepts English only.
-- `--engine`: `qwen` (default), `omnivoice`, or `chatterbox`
-- `--ref-text`: Transcript of reference audio (transcribed automatically if omitted)
-- `--warmup`: Download and load the models ahead of time, then exit. Prints the load time per model; `--reference` and `--text` are not needed.
+The CLI accepts these flags:
+
+- Pass `--quality` with `high` (the default) or `fast`.
+- Pass `--language` with the output language (`auto` by default, or English only for Chatterbox).
+- Pass `--engine` with `qwen` (the default), `omnivoice`, or `chatterbox`.
+- Pass `--ref-text` with the reference transcript, or omit it to transcribe the reference audio automatically.
+- Pass `--warmup` without `--reference` or `--text` to download and load models, print the load time per model, and exit.
 
 ## REST API
 
-Start the API:
+Start the API server on loopback:
 
 ```bash
 uv run uvicorn src.api:app --port 8001
 ```
 
-Synthesis runs in worker threads, so `/health` answers while a request is in progress.
-With the Qwen engine and `candidates` above 1, take 1 runs first. If its transcript
-matches the line, the other takes are skipped. If not, takes 2 to N run together in
-one batched pass. Concurrent requests with the same reference voice and language
-share a batch. `GET /queue` (also in `/health`) shows requests in flight and queued
-rows per model.
+Synthesis runs in worker threads, so `/health` responds while a request runs. When the Qwen engine runs with `candidates` above 1, take 1 runs first. If its transcript matches the line, the server skips the other takes. Otherwise, takes 2 to N run together in one batch. Concurrent requests with the same reference voice and language share a batch. `GET /queue` and `/health` report active requests and queued rows per model.
 
-Seeds: take k uses `seed + k - 1`. A seed gives the exact same take only when the
-batch contents are the same. A single-take request, and take 1 of any request, match
-the output of unbatched generation, unless a concurrent request joins the same batch.
-Takes 2 to N run inside a batch, so they can differ slightly from unbatched takes with
-the same seed. Transcript accuracy is the same.
+Take k uses `seed + k - 1`. A seed produces the exact same take only when the batch contents match. A single-take request and take 1 match unbatched generation unless a concurrent request joins the batch. Takes 2 to N run in a batch and can differ slightly from unbatched takes with the same seed. Transcript accuracy stays the same.
 
-Batching settings (environment variables):
+Set these environment variables to control batching:
 
-- `VOICE_BATCHING`: set to `0` to generate one take at a time with no batching.
-- `VOICE_BATCH_WINDOW_MS`: how long a new batch waits for other requests to join
-  (default 50).
-- `VOICE_MAX_BATCH_SIZE`: the most takes in one batch (default 8).
+- Set `VOICE_BATCHING` to `0` to generate one take at a time without batching.
+- Set `VOICE_BATCH_WINDOW_MS` to the milliseconds that a new batch waits for other requests to join (default 50).
+- Set `VOICE_MAX_BATCH_SIZE` to the maximum number of takes in one batch (default 8).
 
-Open `http://127.0.0.1:8001/docs` for API docs, or generate speech via curl:
+Open `http://127.0.0.1:8001/docs` for the API documentation, or call `/synthesize` with `curl` (add `-F "engine=chatterbox"` to select another engine):
 
 ```bash
 curl -X POST http://127.0.0.1:8001/synthesize \
@@ -90,89 +76,41 @@ curl -X POST http://127.0.0.1:8001/synthesize \
   -o output.wav
 ```
 
-The `/synthesize` endpoint accepts an `engine` field:
-
-```bash
-curl -X POST http://127.0.0.1:8001/synthesize \
-  -F "reference_audio=@voice_sample.wav" \
-  -F "text=Hello from the API" \
-  -F "engine=chatterbox" \
-  -o output.wav
-```
-
-Warm up before the first request to download and load model weights outside a synthesis request:
+Call `/warmup` before the first request to download and load model weights outside a synthesis request:
 
 ```bash
 curl -X POST http://127.0.0.1:8001/warmup -F "engine=qwen" -F "quality=high"
 ```
 
-The response reports the loaded `model_id` and the load time per stage. A failed download returns a 500 with an actionable message instead of a bare I/O error.
+The `/warmup` response reports the loaded `model_id` and the load time per stage. If a model download fails, the server returns HTTP 500 with an actionable error message. `GET /health` reports `version` (package version and git revision) and `capabilities` (speed control, transcription, and sidecar transcripts). Clients can use these fields to detect stale servers. Failed requests keep their status codes and add a `traceback` field with the full Python traceback.
 
-`GET /health` reports `version` (the package version and git revision of the running process) and `capabilities` (speed control, transcription, sidecar transcripts) so clients can detect stale servers.
-
-Failed requests keep their status codes and add a `traceback` field with the full Python traceback; the service binds to loopback only. When `/transcribe` cannot run (missing transcription backend or failed model download), it returns 422 with guidance: pass `ref_text` directly to `/synthesize`, or store the transcript in the reference's sidecar file.
-
-### Reference transcripts (sidecar JSON)
-
-When `ref_text` is empty, a transcript stored next to the reference audio is used instead of running transcription. The sidecar shares the audio file's stem and adds `.json`, e.g. `voice_samples/karan.wav` → `voice_samples/karan.json`:
+A sidecar file is a JSON transcript file. If `/transcribe` cannot run because the backend is missing or a model download fails, it returns HTTP 422. Pass `ref_text` to `/synthesize` or store the transcript in a sidecar file next to the reference audio. The sidecar file uses the audio file stem plus `.json`, for example `voice_samples/karan.json` for `voice_samples/karan.wav`:
 
 ```json
 { "transcript": "Words from the recording.", "reference_id": "..." }
 ```
 
-Only the `transcript` key is required. For uploaded references, `/synthesize` also finds the sidecar in the saved-voice library (`voice_samples/<name>.json`) when the uploaded file name matches a saved voice.
+When `ref_text` is empty, the cloner reads the `transcript` key from the sidecar file instead of running transcription. The JSON object must include the `transcript` key. When an uploaded file name matches a saved voice, `/synthesize` also reads `voice_samples/<name>.json`.
 
 ## Voice engines
 
-Qwen3-TTS is the default engine. It runs on Apple MLX and needs no other package. OmniVoice supports more than 600 languages. It needs the `omnivoice` extra. Chatterbox clones English voices. It needs the `chatterbox-tts` package.
-
-## Optional: OmniVoice (600+ Languages)
-
-To add voice cloning in 600+ languages:
+Qwen3-TTS is the default engine. It runs on Apple MLX and needs no other package. OmniVoice clones voices in more than 600 languages. Install the `omnivoice` extra to run OmniVoice:
 
 ```bash
 uv sync --extra omnivoice
 uv run --extra omnivoice shiny run app.py
 ```
 
-Select **OmniVoice** under **Voice engine** in the app, or pass `--engine omnivoice` to the CLI or API.
+Select OmniVoice under Voice engine in the app, or pass `--engine omnivoice` to the CLI or API.
 
-## Optional: Chatterbox (English, experimental)
+Chatterbox is an experimental English voice cloner. High fidelity uses the full model, and fast draft uses Chatterbox-Turbo. The first run downloads about 3 GB of model files. If downloads are slow, set `HF_TOKEN` for higher rate limits.
 
-Chatterbox clones English voices. High fidelity uses the full model. Fast draft uses Chatterbox-Turbo.
+`chatterbox-tts` pins `transformers==5.2.0`, `torch==2.6.0`, and `torchaudio==2.6.0`, which conflict with the default app environment. Use a separate environment for Chatterbox. Install the package with `pip install chatterbox-tts`. Installing it into the default environment can break Whisper transcription and Qwen generation. Select Chatterbox under Voice engine in the app, or pass `--engine chatterbox` to the CLI or API. There is no `uv` extra for Chatterbox, so the engine shows a setup error when the package is missing.
 
-To use Chatterbox in the app:
+The default app pins matching PyTorch and torchaudio versions because their native libraries must match. If an optional install breaks transcription, restore the default environment with `uv sync` (or `uv sync --extra dev`). Then restart Shiny. This command also removes packages that you installed outside the dependency list of the project.
 
-1. Install the package with `pip install chatterbox-tts`.
-2. Select **Chatterbox** under **Voice engine**.
-3. Write the script.
-4. Click **Create audio**.
-
-To use Chatterbox with the CLI or API instead, pass `--engine chatterbox`.
-
-The first run downloads about 3 GB of model files. If downloads are slow, set a `HF_TOKEN` for higher rate limits.
-
-`chatterbox-tts` pins `transformers==5.2.0`, `torch==2.6.0`, and `torchaudio==2.6.0`. These versions conflict with the default app environment. Use a separate environment for Chatterbox's pinned dependencies. Installing them into the default environment can break Whisper transcription and Qwen generation. There is no `uv` extra for Chatterbox; if the package is missing, the engine shows a setup error.
-
-The default app pins matching PyTorch and torchaudio versions because their native libraries must match. If an optional install breaks transcription, restore the default environment with `uv sync` (or `uv sync --extra dev` for development), then restart Shiny. This also removes packages installed outside the project's dependency list.
-
-If model loading stops with `TypeError: 'NoneType' object is not callable`, install an older setuptools:
+If model loading stops with `TypeError: 'NoneType' object is not callable`, install an older setuptools before you start the app again:
 
 ```bash
 pip install "setuptools<81"
-```
-
-Then start the app again.
-
-## Tips for Best Results
-
-- Use 5–12 seconds of clear, natural speech.
-- Record in a quiet room with a single speaker.
-- Check and correct the reference transcript before generating.
-- Use punctuation (commas, periods) to control pauses and pacing.
-
-## Testing
-
-```bash
-uv run pytest
 ```
