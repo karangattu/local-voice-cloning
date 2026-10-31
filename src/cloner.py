@@ -196,6 +196,16 @@ def validate_engine(engine: str) -> None:
         raise ValueError(f"Unknown engine '{engine}'. Choose qwen or omnivoice.")
 
 
+def _load_icl_reference(path: str | Path, sample_rate: int):
+    """Reference clip as an MLX array for Qwen's voice-cloning path.
+
+    MLX needs its native runtime, so import it only here. Unit tests replace
+    this function, because Linux CI has no MLX runtime."""
+    from mlx_audio.utils import load_audio
+
+    return load_audio(str(path), sample_rate=sample_rate)
+
+
 def _load_stt_model(model_id: str):
     from mlx_audio.stt.utils import load_model
 
@@ -746,9 +756,7 @@ class LocalVoiceCloner:
                 and hasattr(tts_model, "_generate_icl")
                 and getattr(getattr(tts_model, "speech_tokenizer", None), "has_encoder", False)
             ):
-                from mlx_audio.utils import load_audio as load_mlx_audio
-
-                ref_audio = load_mlx_audio(str(canonical_ref_path), sample_rate=self.sample_rate)
+                ref_audio = _load_icl_reference(canonical_ref_path, self.sample_rate)
             normalize = normalize_text and should_normalize(text, language, self.engine)
             batched = self._batching_available(tts_model, ref_audio)
             batch_group = (digest, transcript, language, repetition_penalty)
