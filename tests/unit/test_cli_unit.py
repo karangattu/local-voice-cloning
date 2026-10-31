@@ -51,6 +51,23 @@ def test_parse_args_warmup():
     assert args.text is None
 
 
+def test_parse_args_api_docs():
+    args = parse_args(["--api-docs"])
+    assert args.api_docs is True
+    assert args.reference is None
+    assert args.text is None
+
+
+def test_main_api_docs_prints_reference(capsys, mocker):
+    cloner = mocker.patch("src.cli.LocalVoiceCloner")
+    with patch("sys.argv", ["cli.py", "--api-docs"]):
+        main()
+    out = capsys.readouterr().out
+    assert "POST /synthesize" in out
+    assert "VOICE_BATCHING" in out
+    cloner.assert_not_called()
+
+
 def test_parse_args_requires_reference_and_text_unless_warmup():
     with pytest.raises(SystemExit) as exc:
         parse_args([])

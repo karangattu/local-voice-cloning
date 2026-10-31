@@ -11,6 +11,47 @@ from src.cloner import (
     LocalVoiceCloner,
 )
 
+API_DOCS = """# Agent CLI and REST API reference
+
+## CLI
+uv run python -m src.cli --reference voice_sample.wav --text "Hello" --output output.wav
+Flags: --quality (high|fast), --language (auto by default; English only for chatterbox),
+--engine (qwen|omnivoice|chatterbox), --ref-text, --candidates (1-5), --seed, --warmup.
+
+## REST API
+Start on loopback: uv run uvicorn src.api:app --port 8001 (OpenAPI at /docs)
+
+Endpoints:
+- POST /synthesize: form fields reference_audio, text, ref_text, engine, quality,
+  language, output_format (wav|mp3), candidates, seed, speed.
+- POST /transcribe: form fields reference_audio, quality. Returns 422 if transcription
+  fails; pass ref_text to /synthesize or use a sidecar JSON file instead.
+- POST /warmup: form fields engine, quality. Preloads weights and returns model_id and
+  stage timings; returns 500 on download failure.
+- GET /health: returns status, model_loaded, version (package, git), capabilities, queue.
+- GET /queue: returns in-flight requests and queued rows per model.
+- GET /info: returns engines, models, languages, and formats without loading weights.
+- Errors keep their HTTP status code and include a traceback field.
+
+## Batching and seeds
+Synthesis runs in worker threads so /health responds during requests. With Qwen and
+candidates > 1, take 1 runs first; if its transcript matches, remaining takes are
+skipped, otherwise takes 2..N run in one batch. Concurrent same-voice requests share a
+batch. Take k uses seed + k - 1; takes 2..N in a batch can differ slightly from
+unbatched takes with the same seed.
+Env vars: VOICE_BATCHING=0 (disable), VOICE_BATCH_WINDOW_MS=50, VOICE_MAX_BATCH_SIZE=8.
+
+## Sidecar transcripts
+When ref_text is empty, a <stem>.json file next to the reference audio (or in
+voice_samples/<name>.json for matching uploaded filenames) supplies {"transcript": "..."}.
+
+## Optional engines
+- OmniVoice (600+ languages): uv sync --extra omnivoice
+- Chatterbox (English): install chatterbox-tts in a separate venv (pins torch==2.6.0,
+  torchaudio==2.6.0, transformers==5.2.0). If loading fails with TypeError on NoneType,
+  run pip install "setuptools<81". Restore the default env with uv sync.
+"""
+
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser(description="Local Zero-Shot Neural Voice Cloning CLI")
@@ -104,9 +145,14 @@ def parse_args(args=None):
         help="Download and load the models ahead of time, then exit. "
         "Prints the load time per model; --reference and --text are not needed.",
     )
+    parser.add_argument(
+        "--api-docs",
+        action="store_true",
+        help="Print CLI, REST API, batching, sidecar, and engine docs for agents, then exit.",
+    )
     parsed = parser.parse_args(args)
-    if not parsed.warmup and (parsed.reference is None or parsed.text is None):
-        parser.error("--reference and --text are required unless --warmup is given")
+    if not (parsed.warmup or parsed.api_docs) and (parsed.reference is None or parsed.text is None):
+        parser.error("--reference and --text are required unless --warmup or --api-docs is given")
     if parsed.engine == "qwen" and parsed.language not in SUPPORTED_LANGUAGES:
         parser.error(f"Unsupported Qwen language: {parsed.language}")
     if parsed.engine == "chatterbox" and parsed.language not in CHATTERBOX_LANGUAGES:
@@ -132,6 +178,9 @@ def run_warmup(args) -> None:
 
 def main():
     args = parse_args()
+    if args.api_docs:
+        print(API_DOCS.strip())
+        return
     if args.warmup:
         run_warmup(args)
         return
